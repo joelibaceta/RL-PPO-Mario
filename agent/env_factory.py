@@ -1,59 +1,50 @@
-import gymnasium as gym
-import gymnasium_super_mario_bros  # registra SuperMarioBros-v3
-from gymnasium_super_mario_bros.actions import SIMPLE_MOVEMENT
+import gym_super_mario_bros
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from nes_py.wrappers import JoypadSpace
-from gymnasium.wrappers import GrayScaleObservation, ResizeObservation, FrameStack, RecordVideo
+from gym.wrappers import ResizeObservation, GrayScaleObservation, FrameStack
+from gym.spaces import Box
+
 import numpy as np
-from gymnasium import spaces
-from gymnasium.core import ObservationWrapper
-
-
-class TransposeImage(ObservationWrapper):
-    """Pasa de HxWxC a CxHxW para las policies de SB3."""
-    def __init__(self, env):
-        super().__init__(env)
-        h, w, c = env.observation_space.shape
-        self.observation_space = spaces.Box(
-            low=0, high=255,
-            shape=(c, h, w),
-            dtype=env.observation_space.dtype
-        )
-
-    def observation(self, obs):
-        return np.transpose(obs, (2, 0, 1))
-
-
 class MarioEnvFactory:
-    """
-    Crea callables para SubprocVecEnv/DummyVecEnv.
-    Usa Gymnasium + gymnasium-super-mario-bros + nes-py.
-    """
-    def __init__(self,
-                 world="SuperMarioBros-v3",
-                 actions=SIMPLE_MOVEMENT,
-                 record=False,
-                 record_path="data/videos",
-                 render=False):
-        self.world       = world
-        self.actions     = actions
-        self.record      = record
-        self.record_path = record_path
-        self.render      = render
+    def __init__(self, world="SuperMarioBros-v0", actions=None, render=False):
+        self.world = world
+        self.actions = actions or SIMPLE_MOVEMENT
+        self.render = render
 
-    def make(self, rank=0):
+    def make(self):
         def _init():
-            # 1) Crear el entorno
-            env = gym.make(self.world, render_mode="human" if self.render else None)
-            # 2) Limitar acciones
+            # Crear el entorno con compatibilidad Gymnasium
+            env = gym_super_mario_bros.make(self.world, apply_api_compatibility=True)
+
+            # Limitar el conjunto de acciones
             env = JoypadSpace(env, self.actions)
-            # 3) Grabar video si hace falta
-            if self.record:
-                env = RecordVideo(env, self.record_path, name_prefix=f"env_{rank}")
-            # 4) Blanco y negro + redimensionar + stack de frames
-            env = GrayScaleObservation(env, keep_dim=True)
-            env = ResizeObservation(env, 84)
-            env = FrameStack(env, num_stack=4)
-            # 5) Transponer canales al frente
-            env = TransposeImage(env)
+
+            env = ResizeObservation(env, shape=(80, 75))
+
+            # Preprocesado de la imagen
+            env = GrayScaleObservation(env, keep_dim=False)  # Pasa a escala de grises
+            env = FrameStack(env, num_stack=4)            # Apila 4 frames
+            orig_space = env.observation_space
+            env.observation_space = Box(
+                low=0.0,
+                high=1.0,
+                shape=orig_space.shape,
+                dtype=np.float32
+            )
+
+            # Parchear reset para mantener la tupla (obs, info)
+            original_reset = env.reset
+            def reset(*args, **kwargs):
+                # Eliminar parámetros no soportados
+                kwargs.pop("seed", None)
+                kwargs.pop("options", None)
+                obs_info = original_reset(*args, **kwargs)
+                # Asegurar formato (obs, info)
+                if isinstance(obs_info, tuple) and len(obs_info) == 2:
+                    return obs_info
+                return obs_info, {}
+            env.reset = reset
+
             return env
+
         return _init

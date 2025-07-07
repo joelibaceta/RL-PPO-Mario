@@ -1,19 +1,19 @@
-# core RL & env
 gymnasium==0.29.1
-gym-super-mario-bros==7.4.0  # and use apply_api_compatibility=True
+gym-super-mario-bros==7.4.0
 nes-py==8.2.1
 
 stable-baselines3==2.3.0
 sb3-contrib==2.3.0
 
-# torch & vision
 torch>=2.3.0
 torchvision>=0.18.0
 
-# utilities
+shimmy>=0.2.1        # Para compatibilidad Gym → Gymnasium en SB3
 numpy>=1.26.4
 opencv-python>=4.9.0.80
 tqdm>=4.66.2
 matplotlib>=3.8.4
 tensorboard>=2.15.1
 pillow>=10.2.0
+moviepy
+
