@@ -1,84 +1,75 @@
-import os
-from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecVideoRecorder
-from stable_baselines3.common.callbacks import CheckpointCallback
-from agent.env_factory import MarioEnvFactory
-import torch
-import numpy as np
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-from nes_py.wrappers import JoypadSpace
-from gym.wrappers import (
-    ResizeObservation,
-    GrayScaleObservation,
-    FrameStack,
-    RecordVideo,
-    LazyFrames,
-)
-from agent.mario_cnn import MarioCNN
-import cv2
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.callbacks import EvalCallback
-import gym_super_mario_bros
-from shimmy.openai_gym_compatibility import GymV21CompatibilityV0
-import gym
-from gymnasium.spaces import Discrete as GymnasiumDiscrete
+# agent/mario_trainer.py
 
-from stable_baselines3.common.vec_env import VecMonitor
+import os
+import torch
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+from agent.mario_cnn import MarioCNN
+
 
 class MarioRLTrainer:
-    def __init__(
-        self,
-        world="SuperMarioBros-v0",
-        n_envs=8,
-        log_dir="data/logs",
-        model_dir="data/models",
-        video_dir="data/videos",
-        render=False,
-    ):
-        self.world = world
-        self.n_envs = n_envs
+    """
+    Trainer for PPO agent in Super Mario Bros.
+
+    Allows custom environment factories and training configurations.
+    """
+
+    def __init__(self, env_factory, log_dir="data/logs", model_dir="data/models", n_envs=4):
+        """
+        Initialize the trainer.
+
+        :param env_factory: Factory function to create environments.
+        :param log_dir: Directory for TensorBoard logs.
+        :param model_dir: Directory for saved models.
+        :param n_envs: Number of parallel environments.
+        """
+        self.env_factory = env_factory
         self.log_dir = log_dir
         self.model_dir = model_dir
-        self.video_dir = video_dir
-        self.render = render
+        self.n_envs = n_envs
 
         os.makedirs(self.log_dir, exist_ok=True)
         os.makedirs(self.model_dir, exist_ok=True)
-        os.makedirs(self.video_dir, exist_ok=True)
 
     def train(self, total_timesteps=1_000_000):
-        """Entrena un agente PPO en Mario con métricas automáticas."""
-        print("[INFO] Creando entorno vectorizado (DummyVecEnv)…")
-        factory = MarioEnvFactory(world=self.world, render=False)
-        env = DummyVecEnv([factory.make() for _ in range(self.n_envs)])
-        env = VecMonitor(env, filename=os.path.join(self.log_dir, "monitor.csv"))
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        """
+        Train PPO agent with checkpointing and metrics.
 
+        :param total_timesteps: Total training timesteps.
+        """
+        print("[INFO] Creating vectorized environments...")
+        env = DummyVecEnv([self.env_factory.make() for _ in range(self.n_envs)])
+        env = VecMonitor(env)
+
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
         policy_kwargs = dict(
             features_extractor_class=MarioCNN,
             features_extractor_kwargs=dict(features_dim=512),
         )
 
-        print("[INFO] Configurando modelo PPO(CnnPolicy)…")
+        print("[INFO] Initializing PPO model...")
         model = PPO(
-            "CnnPolicy",
-            env,
-            verbose=1,  # 📢 imprime métricas en consola
-            tensorboard_log=self.log_dir,  # ✅ activa TensorBoard
-            device=device,
-            policy_kwargs=policy_kwargs,
-        )
-
-        eval_env = DummyVecEnv([factory.make() for _ in range(self.n_envs)])
-        eval_env = VecMonitor(eval_env, filename=os.path.join(self.log_dir, "monitor.csv"))
-        eval_callback = EvalCallback(
-            eval_env,
-            best_model_save_path=self.model_dir,
-            log_path=self.log_dir,
-            eval_freq=50_000,  # evalúa cada 50k steps
-            deterministic=True,
-            render=False,
+            policy="CnnPolicy",
+            env=env,
             verbose=1,
+            tensorboard_log=self.log_dir,
+            device=device,
+            n_steps=4096,            # pasos más largos para aprender patrones temporales
+            batch_size=1024,         # batches grandes = actualizaciones más estables
+            learning_rate=1e-4,      # más bajo para que no sobrescriba conocimientos útiles
+            gamma=0.99,              # valora recompensas futuras (no solo avanzar)
+            gae_lambda=0.95,         # suaviza ventajas, mejor generalización
+            clip_range=0.2,          # actualizaciones moderadas
+            ent_coef=0.1,            # más exploración (saltará y probará combinaciones)
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+            policy_kwargs=dict(
+                features_extractor_class=MarioCNN,
+                features_extractor_kwargs=dict(features_dim=512),
+                ortho_init=False,
+                activation_fn=torch.nn.ReLU
+            )
         )
 
         checkpoint = CheckpointCallback(
@@ -87,86 +78,21 @@ class MarioRLTrainer:
             name_prefix="mario_ppo",
         )
 
-        print(f"[INFO] Entrenando {total_timesteps} timesteps…")
-        model.learn(
-            total_timesteps=total_timesteps,
-            callback=[checkpoint, eval_callback],
+        eval_env = DummyVecEnv([self.env_factory.make()])
+        eval_env = VecMonitor(eval_env)
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path=self.model_dir,
+            log_path=self.log_dir,
+            eval_freq=50_000,
+            deterministic=True,
+            render=False,
+            verbose=1,
         )
+
+        print(f"[INFO] Starting training for {total_timesteps} timesteps...")
+        model.learn(total_timesteps=total_timesteps, callback=[checkpoint, eval_callback])
 
         final_path = os.path.join(self.model_dir, "mario_ppo_final")
         model.save(final_path)
-        print(f"[INFO] Entrenamiento terminado. Modelo en: {final_path}")
-
-        env.close()
-
-    def evaluate(self, model_path=None, episodes=5, record_video=True):
-        """Evalúa un modelo PPO entrenado y graba un vídeo sin deformaciones."""
-        if model_path is None:
-            model_path = os.path.join(self.model_dir, "mario_ppo_final.zip")
-        print(f"[INFO] Cargando modelo: {model_path}")
-
-        # 🔥 Carga modelo entrenado
-        model = PPO.load(model_path)
-
-        # 🎮 Entorno para el modelo (con preprocesado igual al entrenamiento)
-        env_model = gym_super_mario_bros.make(self.world, apply_api_compatibility=True)
-        env_model = JoypadSpace(env_model, SIMPLE_MOVEMENT)
-        env_model = ResizeObservation(env_model, shape=(80, 75))
-        env_model = GrayScaleObservation(env_model, keep_dim=False)
-        env_model = FrameStack(env_model, num_stack=4)
-
-        # 🎥 Entorno para vídeo (sin preprocesado, frames originales NES)
-        if record_video:
-            env_video = gym_super_mario_bros.make(
-                self.world, apply_api_compatibility=True, render_mode="rgb_array"
-            )
-            env_video = JoypadSpace(env_video, SIMPLE_MOVEMENT)
-
-            # ⚙️ Configura OpenCV video writer
-            video_path = os.path.join(self.video_dir, "mario_eval.mp4")
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            fps = 30  # NES ~60fps, pero reducimos para compatibilidad
-            out = cv2.VideoWriter(video_path, fourcc, fps, (256, 240))
-            print(f"[INFO] Grabando vídeo en: {video_path}")
-
-        for ep in range(1, episodes + 1):
-            obs_model, _ = env_model.reset()
-            if record_video:
-                obs_video, _ = env_video.reset()
-                frame = env_video.render()
-                out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
-            done = False
-            total_reward = 0
-
-            while not done:
-                # ➡️ Predecir acción
-                obs_batch = np.expand_dims(obs_model, axis=0)  # añade batch dimension
-                action, _ = model.predict(obs_batch, deterministic=True)
-                action = int(action)
-
-                # ➡️ Paso en el entorno del modelo
-                obs_model, reward, terminated, truncated, _ = env_model.step(action)
-                done = terminated or truncated
-                total_reward += reward
-
-                # 🎥 Grabar frame original
-                if record_video:
-                    obs_video, _, _, _, _ = env_video.step(action)
-                    frame = env_video.render()
-                    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-
-                # 🖥 Mostrar en pantalla si render=True
-                if self.render and not record_video:
-                    env_video.render()
-
-            print(f"[INFO] Episodio {ep}: recompensa = {total_reward}")
-
-        # 🧹 Limpiar
-        env_model.close()
-        if record_video:
-            env_video.close()
-            out.release()
-            print(f"[INFO] Vídeo guardado correctamente ✅")
-
-        print("[INFO] Evaluación finalizada.")
+        print(f"[INFO] Training completed. Model saved at {final_path}")
