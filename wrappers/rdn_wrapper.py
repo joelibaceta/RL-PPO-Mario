@@ -1,6 +1,7 @@
-import gym
+import gymnasium as gym
 import torch
 import torch.nn as nn
+import numpy as np
 
 class RNDWrapper(gym.Wrapper):
     def __init__(self, env, beta=0.01):
@@ -25,7 +26,11 @@ class RNDWrapper(gym.Wrapper):
         self.optimizer = torch.optim.Adam(self.predictor.parameters(), lr=1e-3)
 
     def step(self, action):
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        # Handle multi-objective reward from mo-gymnasium (take first objective)
+        if isinstance(reward, (list, tuple)) and len(reward) > 1:
+            reward = reward[0]  # Primary objective (x-position progress)
+        
         obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
 
         # Calculate intrinsic reward
@@ -43,4 +48,5 @@ class RNDWrapper(gym.Wrapper):
         loss.backward()
         self.optimizer.step()
 
-        return obs, total_reward, done, info
+        # Return gymnasium format (terminated, truncated)
+        return obs, total_reward, terminated, truncated, info

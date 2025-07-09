@@ -1,6 +1,7 @@
-import gym
+import gymnasium as gym
 import torch
 import torch.nn as nn
+import numpy as np
 
 class ICMWrapper(gym.Wrapper):
     def __init__(self, env, beta=0.01, feature_dim=256):
@@ -35,7 +36,11 @@ class ICMWrapper(gym.Wrapper):
 
     def step(self, action):
         state = self.env.state if hasattr(self.env, 'state') else None
-        obs, reward, done, info = self.env.step(action)
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        
+        # Handle multi-objective reward from mo-gymnasium (take first objective)
+        if isinstance(reward, (list, tuple)) and len(reward) > 1:
+            reward = reward[0]  # Primary objective (x-position progress)
 
         # Compute intrinsic reward
         s_t = torch.tensor(self.feature(obs).detach(), device=self.device).float()
@@ -61,4 +66,5 @@ class ICMWrapper(gym.Wrapper):
         loss.backward()
         self.optimizer.step()
 
-        return obs, total_reward, done, info
+        # Return gymnasium format (terminated, truncated)
+        return obs, total_reward, terminated, truncated, info

@@ -1,10 +1,54 @@
-import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
-from nes_py.wrappers import JoypadSpace
-from gym.wrappers import ResizeObservation, GrayScaleObservation, FrameStack
-from gym.spaces import Box
+import mo_gymnasium as mo_gym
+from gymnasium.wrappers import ResizeObservation, GrayscaleObservation, FrameStackObservation
+from gymnasium.spaces import Box, Discrete
+import gymnasium as gym
 import numpy as np
 from agent.pre_process_pipeline import EnvPreprocessingPipeline
+
+
+class MoMarioActionWrapper(gym.ActionWrapper):
+    """
+    Wrapper to map SIMPLE_MOVEMENT actions to mo-gymnasium action space.
+    This provides compatibility with the original action space expectations.
+    """
+    
+    # Define simplified action mapping (similar to SIMPLE_MOVEMENT)
+    SIMPLE_ACTIONS = [
+        0,    # NOOP
+        1,    # Right
+        2,    # Right + A (run/jump)
+        3,    # Right + B (fireball)
+        4,    # Right + A + B
+        5,    # A (jump)
+        6,    # Left
+    ]
+    
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = Discrete(len(self.SIMPLE_ACTIONS))
+    
+    def action(self, action):
+        # Map simplified action to mo-gymnasium action
+        return self.SIMPLE_ACTIONS[action]
+
+
+class MoMarioRewardWrapper(gym.RewardWrapper):
+    """
+    Wrapper to handle multi-objective rewards from mo-gymnasium.
+    Converts the 5D reward vector to a single scalar reward.
+    """
+    
+    def __init__(self, env):
+        super().__init__(env)
+    
+    def reward(self, reward):
+        # mo-gymnasium returns 5D reward: [x_pos, time, death, coin, enemy]
+        # We primarily care about x-position progress (first component)
+        if isinstance(reward, (list, tuple, np.ndarray)) and len(reward) > 1:
+            # Weighted combination: prioritize x-position, penalize time, reward coins
+            x_pos, time, death, coin, enemy = reward
+            return x_pos - 0.1 * time + coin * 10 + enemy * 5 - death * 100
+        return reward
 
 
 class MarioEnvFactory:
@@ -19,7 +63,7 @@ class MarioEnvFactory:
 
     def __init__(
         self,
-        world: str = "SuperMarioBros-v0",
+        world: str = "mo-supermario-v0",
         actions=None,
         render: bool = False,
         preprocess_pipeline: EnvPreprocessingPipeline = None,
@@ -27,15 +71,15 @@ class MarioEnvFactory:
         auto_normalize: bool = True,
     ):
         """
-        :param world: Mario world version (e.g., "SuperMarioBros-v0").
-        :param actions: List of allowed actions (defaults to SIMPLE_MOVEMENT).
+        :param world: Mo-gymnasium world version (e.g., "mo-supermario-v0").
+        :param actions: Deprecated parameter for compatibility (mo-gymnasium handles actions internally).
         :param render: If True, enables rendering in the environment.
         :param preprocess_pipeline: EnvPreprocessingPipeline object. If None, uses default pipeline.
         :param custom_wrappers: List of callables(env) -> env applied after preprocessing.
         :param auto_normalize: Automatically normalize observation space to [0.0, 1.0].
         """
         self.world = world
-        self.actions = actions or SIMPLE_MOVEMENT
+        self.actions = actions  # Kept for compatibility but not used
         self.render = render
         self.preprocess_pipeline = preprocess_pipeline or self.default_pipeline()
         self.custom_wrappers = custom_wrappers or []
@@ -43,22 +87,25 @@ class MarioEnvFactory:
 
     def default_pipeline(self):
         """
-        Returns a pipeline with: Resize, Grayscale, FrameStack, Normalize.
+        Returns a pipeline with: Grayscale, FrameStack, Normalize.
+        Using simpler processing to avoid opencv dependency.
         """
         builder = EnvPreprocessingPipeline()
-        builder.add(ResizeObservation, shape=(80, 75))
-        builder.add(GrayScaleObservation, keep_dim=False)
-        builder.add(FrameStack, num_stack=4)
+        # Skip ResizeObservation for now to avoid opencv dependency
+        builder.add(GrayscaleObservation, keep_dim=False)
+        builder.add(FrameStackObservation, stack_size=4)
         builder.add(self._normalize_observation_space)
         return builder
 
     def make_base_factory(self, render_mode=None):
         """
-        Returns a factory that creates a raw Mario environment.
+        Returns a factory that creates a raw mo-gymnasium Mario environment.
         """
         def _init():
-            env = gym_super_mario_bros.make(self.world, apply_api_compatibility=True, render_mode=render_mode)
-            env = JoypadSpace(env, self.actions)
+            env = mo_gym.make(self.world, render_mode=render_mode)
+            # Apply action and reward wrappers for compatibility
+            env = MoMarioActionWrapper(env)
+            env = MoMarioRewardWrapper(env)
             return env
         return _init
 
