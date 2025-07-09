@@ -17,3 +17,7 @@ tensorboard>=2.15.1
 pillow>=10.2.0
 moviepy
 
+# Testing framework
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
