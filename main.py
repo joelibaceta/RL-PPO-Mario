@@ -1,6 +1,7 @@
 import argparse
 import os
 from agent.mario_trainer import MarioRLTrainer
+from agent.env_factory import MarioEnvFactory
 
 MODEL_DIR = "data/models"
 LOG_DIR = "data/logs"
@@ -24,13 +25,17 @@ def main():
     # Si render, usa solo 1 env (para que se vea bien)
     n_envs = 1 if args.render or args.mode == "eval" else 4
 
-    trainer = MarioRLTrainer(
+    # Create environment factory
+    env_factory = MarioEnvFactory(
         world="SuperMarioBros-v0",
+        render=args.render,
+    )
+
+    trainer = MarioRLTrainer(
+        env_factory=env_factory,
         n_envs=n_envs,
         log_dir=LOG_DIR,
         model_dir=MODEL_DIR,
-        video_dir=VIDEO_DIR,
-        render=args.render,
     )
 
     if args.mode == "train":
@@ -38,7 +43,13 @@ def main():
         trainer.train(total_timesteps=args.timesteps)
     else:
         print("[INFO] Iniciando evaluación…")
-        trainer.evaluate(model_path=args.model)
+        from agent.mario_evaluator import MarioRLEvaluator
+        evaluator = MarioRLEvaluator(
+            env_factory=env_factory,
+            video_dir=VIDEO_DIR,
+            render=args.render,
+        )
+        evaluator.evaluate(model_path=args.model)
 
 
 if __name__ == "__main__":
