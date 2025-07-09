@@ -366,7 +366,7 @@ class TestMarioTraining:
         This test will be skipped if Mario environment is not working.
         """
         try:
-            env_factory = MarioEnvFactory(world="SuperMarioBros-v0")
+            env_factory = MarioEnvFactory(world="mo-supermario-v0")
             env_fn = env_factory.make()
             env = env_fn()
             
