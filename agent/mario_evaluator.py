@@ -1,82 +1,84 @@
-# agent/mario_evaluator.py
-
-import os
+import torch
 import numpy as np
 import cv2
-from stable_baselines3 import PPO
-
+import os
+import time
+from agent.mario_lstm import MarioConvLSTM
+from agent.env_builder import make_mario_env
 
 class MarioRLEvaluator:
-    """
-    Evaluator for trained PPO agents in Super Mario Bros.
-    """
-
-    def __init__(self, env_factory, video_dir="data/videos", render=False):
-        """
-        Initialize the evaluator.
-
-        :param env_factory: Factory to create environments.
-        :param video_dir: Directory for saving evaluation videos.
-        :param render: Whether to render the environment in a window.
-        """
-        self.env_factory = env_factory
+    def __init__(self, video_dir="videos", fps=30):
+        self.env = make_mario_env(seed=42)
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         self.video_dir = video_dir
-        self.render = render
+        self.fps = fps
+
         os.makedirs(self.video_dir, exist_ok=True)
 
-    def evaluate(self, model_path, episodes=5, record_video=True):
-        """
-        Evaluate PPO model and optionally record video.
+    def preprocess_obs(self, obs):
+        """Convierte (stack, H, W, C) -> (1, stack*C, H, W) normalizado"""
+        stack, H, W, C = obs.shape
+        obs = torch.tensor(obs, dtype=torch.float32)
+        obs = obs.permute(0, 3, 1, 2).reshape(1, -1, H, W)
+        return obs.to(self.device) / 255.0
 
-        :param model_path: Path to trained PPO model.
-        :param episodes: Number of episodes to run.
-        :param record_video: Whether to record a video.
-        """
-        print(f"[INFO] Loading model from {model_path}")
-        model = PPO.load(model_path)
+    def load_model(self, model_path, obs_shape, n_actions):
+        """Carga siempre MarioConvLSTM"""
+        print("🔄 Cargando modelo como MarioConvLSTM...")
+        model = MarioConvLSTM(obs_shape, n_actions).to(self.device)
+        model.load_state_dict(torch.load(model_path, map_location=self.device))
+        model.eval()
+        print("✅ Modelo LSTM cargado correctamente")
+        return model
 
-        # Create environment with render_mode preset for video
-        if record_video:
-            base_factory = self.env_factory.make_base_factory(render_mode="rgb_array")
-            env_model = self.env_factory.preprocess_pipeline.build(base_factory)()
-        else:
-            env_model = self.env_factory.make()()
+    def evaluate(self, model_path, episodes=1):
+        obs_shape = self.env.observation_space.shape
+        stack, H, W, C = obs_shape
+        channels = stack * C
 
-        if record_video:
-            video_path = os.path.join(self.video_dir, "mario_eval.mp4")
-            out = cv2.VideoWriter(
-                video_path, cv2.VideoWriter_fourcc(*"mp4v"), 30, (256, 240)
-            )
-            print(f"[INFO] Recording evaluation video to {video_path}")
+        # Cargar modelo
+        model = self.load_model(model_path, (channels, H, W), self.env.action_space.n)
 
-        for ep in range(1, episodes + 1):
-            obs, _ = env_model.reset()
+        # Nombre único para el video
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        video_path = os.path.join(self.video_dir, f"mario_eval_{timestamp}.mp4")
+
+        # Inicializa VideoWriter
+        obs, _ = self.env.reset()
+        frame = self.env.render()
+        frame_height, frame_width = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(video_path, fourcc, self.fps, (frame_width, frame_height))
+
+        print(f"🎮 Evaluando modelo durante {episodes} episodios...")
+
+        for ep in range(episodes):
+            obs, _ = self.env.reset()
             done = False
             total_reward = 0
+            hidden_state = None  # 🔥 estado oculto LSTM
 
             while not done:
-                # Predict action deterministically
-                action, _ = model.predict(obs, deterministic=True)
-                if isinstance(action, np.ndarray):  # Fix for vectorized obs
-                    action = int(action)
+                tensor_obs = self.preprocess_obs(obs)
+                with torch.no_grad():
+                    logits, _, hidden_state = model(tensor_obs, hidden_state)
+                    # Detach hidden state para no acumular grafo
+                    hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
 
-                obs, reward, terminated, truncated, _ = env_model.step(action)
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    action = np.random.choice(len(probs[0]), p=probs[0])
+
+                obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
                 total_reward += reward
 
-                # Get frame for video if enabled
-                if record_video:
-                    frame = env_model.render()  # No mode needed
-                    out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                # Graba frame en el video
+                frame = self.env.render()
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                out.write(frame_bgr)
 
-                # Render live if requested
-                if self.render and not record_video:
-                    env_model.render()
+            print(f"🏁 Episodio {ep+1}: Total reward = {total_reward}")
 
-            print(f"[INFO] Episode {ep}: Total reward = {total_reward}")
-
-        if record_video:
-            out.release()
-            print("[INFO] Video saved successfully ✅")
-
-        env_model.close()
+        out.release()
+        self.env.close()
+        print(f"🎥 Video guardado en: {video_path}")

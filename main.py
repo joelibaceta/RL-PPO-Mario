@@ -27,7 +27,7 @@ def main():
 
     # Create environment factory
     env_factory = MarioEnvFactory(
-        world="SuperMarioBros-v0",
+        world="mo-supermario-v0",
         render=args.render,
     )
 

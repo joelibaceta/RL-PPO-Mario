@@ -1,23 +1,10 @@
-gymnasium==0.29.1
+# Proyecto RL Mario - Entorno Python 3.11/macOS
+torch>=2.3.0
+stable-baselines3==2.6.0
+gym==0.26.2
 gym-super-mario-bros==7.4.0
 nes-py==8.2.1
-
-stable-baselines3==2.3.0
-sb3-contrib==2.3.0
-
-torch>=2.3.0
-torchvision>=0.18.0
-
-shimmy>=0.2.1        # Para compatibilidad Gym → Gymnasium en SB3
-numpy>=1.26.4
-opencv-python>=4.9.0.80
-tqdm>=4.66.2
-matplotlib>=3.8.4
-tensorboard>=2.15.1
-pillow>=10.2.0
-moviepy
-
-# Testing framework
-pytest>=7.4.0
-pytest-cov>=4.1.0
-
+pyglet==1.5.21
+opencv-python>=4.7.0
+numpy<2.0.0
+cleanrl
