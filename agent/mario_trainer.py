@@ -81,7 +81,7 @@ class MarioTrainer:
         n_actions = self.env.action_space.n
 
         # Modelo LSTM
-        self.model = MarioConvLSTM(obs_shape_pt, n_actions).to(self.device)
+        self.model = MarioConvLSTM(obs_shape_pt, 512, n_actions).to(self.device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.learning_rate, betas=(0.9, 0.999), eps=1e-5)
 
         # Buffers
@@ -147,7 +147,7 @@ class MarioTrainer:
 
         # Calcula activaciones
         with torch.no_grad():
-            activations = conv_extractor(obs_tensor).cpu()
+            activations = conv_extractor(obs_tensor).mps()
 
         print(f"📊 Activations shape: {activations.shape}")  # (batch, channels, H, W)
 
@@ -212,7 +212,7 @@ class MarioTrainer:
                 dist = Categorical(logits=logits)
 
                 # Exploración
-                epsilon = max(0.05, 0.6 - (update / self.exploration_updates * 0.55))
+                epsilon = max(0.1, 0.5 - (update / (self.exploration_updates * 1.5)))
                 if torch.rand(1).item() < epsilon:
                     action = self.env.action_space.sample()
                     logprob = 0.0
@@ -264,11 +264,14 @@ class MarioTrainer:
                     if curr_x_pos > 1500: reward += 0.4
                     if curr_x_pos > 2000: reward += 0.5
                     
-                    hidden_state = None  # 🔥 Resetea LSTM al morir
+                    hidden_state = (
+                        torch.zeros(1, 1, 512).to(self.device),
+                        torch.zeros(1, 1, 512).to(self.device)
+                    )
                     obs, _ = self.env.reset()
 
             # GAE y PPO
-            self._update_policy(obs)
+            self._update_policy(obs, update)
 
         # Guardar modelo
         torch.save(self.model.state_dict(), os.path.join(self.model_dir, self.model_name))
@@ -277,7 +280,7 @@ class MarioTrainer:
         self.env.close()
         print("✅ Entrenamiento CleanRL completado.")
 
-    def _update_policy(self, obs):
+    def _update_policy(self, obs, update):
         """Actualiza la política PPO"""
         tensor_obs = torch.tensor(np.array(self.obs_buf), dtype=torch.float32)
         tensor_obs = tensor_obs.permute(0, 1, 4, 2, 3)
@@ -288,12 +291,19 @@ class MarioTrainer:
         _, next_value, _ = self.model(self.preprocess_obs(obs).unsqueeze(1), hidden_state)
         returns = self.compute_gae(self.rewards_buf, self.dones_buf, self.values_buf, next_value.item())
 
-
-
         returns = torch.tensor(returns, dtype=torch.float32).to(self.device)
         values = torch.tensor(self.values_buf, dtype=torch.float32).to(self.device)
         logprobs = torch.tensor(self.logprobs_buf, dtype=torch.float32).to(self.device)
         actions = torch.tensor(self.actions_buf, dtype=torch.int64).to(self.device)
+        logprobs_old = torch.tensor(self.logprobs_buf, dtype=torch.float32).to(self.device)
+
+        initial_kl = 1.5   # Mucho más permisivo al principio
+        final_kl   = 0.02  # Estricto cuando ya aprendió
+
+        progress = min(update / (self.total_timesteps // self.num_steps), 1.0)
+        target_kl = initial_kl * (1 - progress) + final_kl * progress
+
+        warmup_updates = 20
 
         for epoch in range(self.update_epochs):
             logits, value, hidden_state = self.model(tensor_obs.unsqueeze(1), hidden_state)
@@ -311,6 +321,15 @@ class MarioTrainer:
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
             v_loss = ((returns - value.squeeze()) ** 2).mean()
             loss = pg_loss + self.vf_coef * v_loss - self.ent_coef * entropy
+
+            # ✅ Cálculo de KL divergence
+            if update > warmup_updates:
+                approx_kl = (logprobs_old - newlogprob).mean()
+                if update > warmup_updates and approx_kl > target_kl:
+                    print(f"🚨 Early stopping at epoch {epoch} due to KL={approx_kl:.4f} (target={target_kl:.4f})")
+                    break  # Detenemos el update si KL se pasa
+            else:
+                approx_kl = (logprobs_old - newlogprob).mean()
 
             self.optimizer.zero_grad()
             loss.backward()
