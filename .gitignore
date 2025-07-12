@@ -1,3 +1,13 @@
 env
 __pycache__/
 data
+frame
+demo.py
+*.mp4
+eval_frames
+logs
+logs_*
+models_*
+video_frames
+cleanrl_logs
+.DS_Store
