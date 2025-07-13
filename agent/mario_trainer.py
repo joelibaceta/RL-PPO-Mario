@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import random
+from tqdm import tqdm
 from torch.distributions.categorical import Categorical
 from agent.env_builder import make_mario_env
 from agent.mario_lstm import MarioConvLSTM
@@ -32,17 +33,17 @@ class RewardNormalizer:
 
 class MarioTrainer:
     def __init__(self,
-                 total_timesteps=1_000_000,
+                 total_timesteps=2_000_000,
                  learning_rate=1e-4,
                  num_steps=1024,
                  update_epochs=6,
                  gamma=0.99,
                  gae_lambda=0.99,
                  clip_coef=0.05,
-                 ent_coef=0.05,  
+                 ent_coef=0.1,  
                  vf_coef=0.5,
                  max_grad_norm=0.5,
-                 exploration_ratio=0.2,
+                 exploration_ratio=0.1,
                  seed=0,
                  model_dir="models_cleanrl",
                  model_name="ppo_mario_cleanrl.pth"):
@@ -191,10 +192,24 @@ class MarioTrainer:
         max_x_pos = 0
         self.episode_length = 0
 
-        for update in range(1, self.total_timesteps // self.num_steps + 1):
+        total_updates = self.total_timesteps // self.num_steps
+
+        print(f"🧵 PyTorch usando {torch.get_num_threads()} hilos")
+
+        for update in tqdm(range(1, total_updates + 1), desc="📈 Entrenando PPO", unit="update"):
             self.update_start_time = time.time()
             prev_x_pos = 0
-            self.episode_length = 0
+
+
+            progress = update / total_updates 
+
+            # 🔥 Annealing del learning rate
+            lr = self.learning_rate * (1 - progress)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+
+            # 🔥 Annealing de entropy coeficiente
+            self.ent_coef = 0.1 * (1 - progress) + 0.01 * progress
 
             # Rollout
             for step in range(self.num_steps):
@@ -231,6 +246,7 @@ class MarioTrainer:
                 
                 reward += np.clip((curr_x_pos - prev_x_pos) / 10.0, -1.0, 1.0) # recompensa por avance
                 #reward -= 0.05  # penaliza quedarse quieto
+                
 
 
                 if action == 3 or action == 7:  # saltar o saltar y avanzar
@@ -240,7 +256,11 @@ class MarioTrainer:
                     else:
                         reward -= 0.05
 
+                if prev_x_pos == curr_x_pos:
+                    reward -= 0.01
+
                 prev_x_pos = curr_x_pos
+ 
 
                 # Buffers
                 self.obs_buf[step] = obs
@@ -254,6 +274,8 @@ class MarioTrainer:
 
                 if done:
 
+                    self.episode_length = 0
+
                     if curr_x_pos > max_x_pos:
                         max_x_pos = curr_x_pos
                         reward += 0.1  # bonificación por alcanzar nueva posición máxima
@@ -263,7 +285,9 @@ class MarioTrainer:
                     if curr_x_pos > 1200: reward += 0.3
                     if curr_x_pos > 1500: reward += 0.4
                     if curr_x_pos > 2000: reward += 0.5
-                    
+                    if curr_x_pos > 2500: reward += 0.6
+                    if curr_x_pos > 3000: reward += 0.7
+
                     hidden_state = (
                         torch.zeros(1, 1, 512).to(self.device),
                         torch.zeros(1, 1, 512).to(self.device)
@@ -300,8 +324,10 @@ class MarioTrainer:
         initial_kl = 1.5   # Mucho más permisivo al principio
         final_kl   = 0.02  # Estricto cuando ya aprendió
 
-        progress = min(update / (self.total_timesteps // self.num_steps), 1.0)
-        target_kl = initial_kl * (1 - progress) + final_kl * progress
+        total_updates = self.total_timesteps // self.num_steps
+        progress = update / total_updates
+        target_kl = max(0.05, initial_kl * (1 - progress) + final_kl * progress)
+        
 
         warmup_updates = 20
 

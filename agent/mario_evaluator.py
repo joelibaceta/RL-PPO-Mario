@@ -22,14 +22,30 @@ class MarioRLEvaluator:
         obs = obs.permute(0, 3, 1, 2).reshape(1, -1, H, W)
         return obs.to(self.device) / 255.0
 
+    def k_greedy_sample(self, probs, k=3, temperature=1.0):
+        """
+        Selecciona aleatoriamente una acción entre las top-k más probables,
+        aplicando suavizado con temperatura para evitar políticas ultra deterministas.
+        """
+        top_k_idx = probs.argsort()[::-1][:k]
+        top_k_probs = probs[top_k_idx]
+
+        # 🔥 Aplica temperatura para suavizar
+        logits = np.log(top_k_probs + 1e-8) / temperature
+        soft_probs = np.exp(logits)
+        soft_probs /= soft_probs.sum()
+
+        return np.random.choice(top_k_idx, p=soft_probs)
+
     def load_model(self, model_path, obs_shape, n_actions):
         """Carga siempre MarioConvLSTM"""
+        lstm_hidden_size = 512
         print("🔄 Cargando modelo como MarioConvLSTM...")
-        model = MarioConvLSTM(obs_shape, n_actions).to(self.device)
+        model = MarioConvLSTM(obs_shape, lstm_hidden_size, n_actions).to(self.device)
         model.load_state_dict(torch.load(model_path, map_location=self.device))
         model.eval()
         print("✅ Modelo LSTM cargado correctamente")
-        return model
+        return model, lstm_hidden_size
 
     def evaluate(self, model_path, episodes=1):
         obs_shape = self.env.observation_space.shape
@@ -37,7 +53,7 @@ class MarioRLEvaluator:
         channels = stack * C
 
         # Cargar modelo
-        model = self.load_model(model_path, (channels, H, W), self.env.action_space.n)
+        model, lstm_hidden_size = self.load_model(model_path, (channels, H, W), self.env.action_space.n)
 
         # Nombre único para el video
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -56,17 +72,21 @@ class MarioRLEvaluator:
             obs, _ = self.env.reset()
             done = False
             total_reward = 0
-            hidden_state = None  # 🔥 estado oculto LSTM
+
+            # 🔥 Inicializa el hidden_state explícitamente
+            hidden_state = (
+                torch.zeros(1, 1, lstm_hidden_size).to(self.device),
+                torch.zeros(1, 1, lstm_hidden_size).to(self.device)
+            )
 
             while not done:
-                tensor_obs = self.preprocess_obs(obs)
+                tensor_obs = self.preprocess_obs(obs).unsqueeze(1)
                 with torch.no_grad():
                     logits, _, hidden_state = model(tensor_obs, hidden_state)
-                    # Detach hidden state para no acumular grafo
                     hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
 
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
-                    action = np.random.choice(len(probs[0]), p=probs[0])
+                    action = self.k_greedy_sample(probs[0], k=3)  # 🔥 Top-k sampling
 
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
