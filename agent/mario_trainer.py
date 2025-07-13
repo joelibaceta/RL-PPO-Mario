@@ -198,9 +198,9 @@ class MarioTrainer:
 
             # Rollout
             for step in range(self.num_steps):
-                #if step % 1000 == 0:
-                #    print("🔍 Visualizando activaciones CNN...")
-                #    self.visualize_activations(obs)
+                #if step % 100 == 0:
+                #   print("🔍 Visualizando activaciones CNN...")
+                #   self.visualize_activations(obs)
                 self.episode_length += 1
                 tensor_obs = self.preprocess_obs(obs).unsqueeze(1)
 
