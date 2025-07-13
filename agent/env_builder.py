@@ -48,9 +48,8 @@ def make_mario_env(env_id: str = "SuperMarioBros-v0", seed: int = None, log_dir:
 
     #env = LifeResetWrapper(env)  
 
- # Salta 4 frames para acelerar
-
-    env = FrameCropWrapper(env, crop_top=80)
+    env = FrameCropWrapper(env, hud_height=34, crop_size=160)
+    env = ResizeObservation(env, (84, 84))
 
     #env = RepaintMarioWrapper(env)
  
