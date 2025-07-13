@@ -36,7 +36,7 @@ def make_mario_env(env_id: str = "SuperMarioBros-v0", seed: int = None, log_dir:
 
  
     # 1) gym.make con compatibilidad de API nueva
-    env = gym.make(env_id, apply_api_compatibility=True, render_mode="rgb_array")
+    env = gym.make(env_id, apply_api_compatibility=True, render_mode=None)
 
     # 2) restringir acciones a SIMPLE_MOVEMENT
     env = JoypadSpace(env, SIMPLE_MOVEMENT)

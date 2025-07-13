@@ -1,85 +1,77 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class MarioConvLSTM(nn.Module):
-    def __init__(self, obs_shape, n_actions):
-        super().__init__()
-        c, h, w = obs_shape  # obs_shape = (stack*C, H, W)
-        print(f"📺 ConvLSTM Input Shape recibido: {obs_shape}")
+    def __init__(self, obs_shape, lstm_hidden_size, n_actions):
+        """
+        CNN adaptada con soporte para LSTM según la arquitectura del paper.
+        Args:
+            obs_shape: (channels, height, width)
+            lstm_hidden_size: Tamaño del hidden state del LSTM
+            n_actions: Número de acciones posibles
+        """
+        super(MarioConvLSTM, self).__init__()
+        c, h, w = obs_shape
 
-        # CNN feature extractor
+        # Convolution Blocks
         self.feature_extractor = nn.Sequential(
-            nn.Conv2d(c, 32, kernel_size=8, stride=4), nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=3, stride=1), nn.ReLU(),
+            nn.Conv2d(c, 64, kernel_size=4, stride=2, padding=1),
+            nn.GroupNorm(num_groups=8, num_channels=64),
+            nn.ReLU(),
+
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.GroupNorm(num_groups=16, num_channels=128),
+            nn.ReLU(),
+
+            nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
+            nn.GroupNorm(num_groups=16, num_channels=256),
+            nn.ReLU(),
+
+            nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1),
+            nn.GroupNorm(num_groups=16, num_channels=256),
+            nn.ReLU()
         )
 
-        # Attention module (generates attention map)
-        self.attention = nn.Conv2d(64, 1, kernel_size=1)  # (batch, 1, H, W)
-
-        # Flatten for LSTM
-        self.flatten = nn.Flatten()
-
-        # Compute flattened dim dynamically
+        # Calcula tamaño de la salida de las CNN
         with torch.no_grad():
-            dummy = torch.zeros(1, c, h, w)
-            features = self.feature_extractor(dummy)
-            flat_dim = self.flatten(features).shape[1]
-        print(f"🌟 Flat dim: {flat_dim}")
+            dummy_input = torch.zeros(1, c, h, w)
+            conv_output = self.feature_extractor(dummy_input)
+            self.flat_dim = conv_output.view(1, -1).shape[1]
 
-        # LSTM to handle temporal dependencies
-        self.lstm = nn.LSTM(input_size=flat_dim, hidden_size=512, batch_first=True)
+        # LSTM layer
+        self.lstm = nn.LSTM(input_size=self.flat_dim, hidden_size=lstm_hidden_size, batch_first=True)
 
-        # Policy and Value heads
-        self.policy = nn.Linear(512, n_actions)
-        self.value = nn.Linear(512, 1)
+        # Política y Valor
+        self.policy_head = nn.Sequential(
+            nn.Linear(lstm_hidden_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, n_actions)
+        )
+        self.value_head = nn.Sequential(
+            nn.Linear(lstm_hidden_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)
+        )
 
-    def forward(self, x, hidden_state=None, return_attention=False):
+    def forward(self, x, hidden_state=None):
         """
-        x: (batch, seq_len, c, h, w) or (batch, c, h, w)
-        hidden_state: (h_0, c_0) tuple for LSTM
-        return_attention: if True, return attention maps for visualization
+        Forward con soporte para LSTM.
+        Args:
+            x: Tensor de entrada (batch, sequence_len, channels, height, width)
+            hidden_state: (h_0, c_0) para LSTM
+        Returns:
+            logits: acciones
+            value: valor esperado
+            next_hidden: nuevo estado oculto del LSTM
         """
-        if x.dim() == 4:
-            x = x.unsqueeze(1)  # Add temporal dim: (batch, 1, c, h, w)
+        batch_size, seq_len, C, H, W = x.size()
+        x = x.view(batch_size * seq_len, C, H, W)
+        features = self.feature_extractor(x)
+        features = features.view(batch_size, seq_len, -1)
 
-        batch_size, seq_len, c, h, w = x.size()
-        features_seq = []
-        attn_maps_seq = []
+        lstm_out, next_hidden = self.lstm(features, hidden_state)
 
-        for t in range(seq_len):
-            frame = x[:, t, :, :, :]  # (batch, c, h, w)
+        logits = self.policy_head(lstm_out[:, -1, :])  # última salida temporal
+        value = self.value_head(lstm_out[:, -1, :]).squeeze(-1)
 
-            # Pass through CNN
-            features = self.feature_extractor(frame)  # (batch, channels, H, W)
-
-            # Attention: generate attention map
-            raw_attn_map = self.attention(features)       # (batch, 1, H, W)
-            attn_map = torch.softmax(raw_attn_map.view(batch_size, -1), dim=-1)
-            attn_map = attn_map.view_as(raw_attn_map)     # Reshape back to (batch, 1, H, W)
-
-            # Apply attention (residual)
-            features = features * attn_map + features
-
-            # Flatten features for LSTM
-            flat_features = self.flatten(features)    # (batch, flat_dim)
-            features_seq.append(flat_features.unsqueeze(1))  # Add temporal dim
-            attn_maps_seq.append(attn_map)            # Save attention map
-
-        features_seq = torch.cat(features_seq, dim=1)  # (batch, seq_len, flat_dim)
-
-        # Pass through LSTM
-        if hidden_state is None:
-            lstm_out, hidden_state = self.lstm(features_seq)
-        else:
-            lstm_out, hidden_state = self.lstm(features_seq, hidden_state)
-
-        # Use last LSTM output for policy and value
-        logits = self.policy(lstm_out[:, -1, :])  # (batch, n_actions)
-        value = self.value(lstm_out[:, -1, :]).squeeze(-1)  # (batch,)
-
-        if return_attention:
-            return logits, value, hidden_state, attn_maps_seq
-        else:
-            return logits, value, hidden_state
+        return logits, value, next_hidden
