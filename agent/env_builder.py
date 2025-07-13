@@ -6,7 +6,7 @@ from nes_py.wrappers import JoypadSpace
 import gym_super_mario_bros
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT
 from wrappers.monitor_wrapper import MonitorWrapper 
-from gym.wrappers import FrameStack, TransformObservation, GrayScaleObservation
+from gym.wrappers import FrameStack, TransformObservation, GrayScaleObservation, ResizeObservation
 
 
 from wrappers.life_reset_wrapper import LifeResetWrapper
@@ -15,7 +15,6 @@ from wrappers.frame_crop_wrapper import FrameCropWrapper
 from wrappers.filter_color_wrapper import FilterColorsWrapper
 from wrappers.repaint_mario_wrapper import RepaintMarioWrapper
 
-from wrappers.resize_observation_wrapper import ResizeObservation
 
 import numpy as np
 
@@ -48,23 +47,20 @@ def make_mario_env(env_id: str = "SuperMarioBros-v0", seed: int = None, log_dir:
 
     #env = LifeResetWrapper(env)  
 
-    env = FrameCropWrapper(env, hud_height=34, crop_size=160)
+    env = FrameCropWrapper(env, hud_height=34, crop_size=180)
+    print(env.observation_space) 
     env = ResizeObservation(env, (84, 84))
-
+    print(env.observation_space) 
     #env = RepaintMarioWrapper(env)
  
     env = FilterColorsWrapper(
         env,
         color_filters=[
-            ((80, 120, 240), (110, 170, 255), (0, 0, 0)),   # Azul → Negro 
+            ((84, 120, 240), (110, 170, 255), (0, 0, 0)),   # Azul → Negro 
         ]
     )
 
-    env = ResizeObservation(env, target_shape=(240, 240))
-
-    #env = GrayScaleObservation(env, keep_dim=True)
-
-
+    env = GrayScaleObservation(env, keep_dim=True)
 
     env = FrameStack(env, num_stack=4)
     # 3) aplicar MonitorWrapper para métricas
