@@ -1,68 +1,48 @@
-"""
-Módulo para construir el entorno de SuperMarioBros compatible con Gymnasium v26+/CleanRL.
-"""
 import gym
-from nes_py.wrappers import JoypadSpace
 import gym_super_mario_bros
-from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT
-from wrappers.monitor_wrapper import MonitorWrapper 
-from gym.wrappers import FrameStack, TransformObservation, GrayScaleObservation, ResizeObservation
+from nes_py.wrappers import JoypadSpace
+from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 
+from gym.vector import SyncVectorEnv, AsyncVectorEnv
+from gym.wrappers import FrameStack, GrayScaleObservation, ResizeObservation
 
-from wrappers.life_reset_wrapper import LifeResetWrapper
 from wrappers.frame_skip_wrapper import FrameSkipWrapper
 from wrappers.frame_crop_wrapper import FrameCropWrapper
 from wrappers.filter_color_wrapper import FilterColorsWrapper
-from wrappers.repaint_mario_wrapper import RepaintMarioWrapper
+from wrappers.life_reset_wrapper import LifeResetWrapper
 
 
-import numpy as np
-
-def make_mario_env(env_id: str = "SuperMarioBros-v0", seed: int = None, log_dir: str = "logs_cleanrl"):
+def make_mario_env(env_id="SuperMarioBros-v0", seed=None, log_dir="logs_cleanrl", render_mode="rgb_array"):
     """
-    Crea un entorno de Mario con:
-      - Gymnasium v26+ API (reset→(obs,info), step→5-tupla)
-      - JoypadSpace(SIMPLE_MOVEMENT) para acciones reducidas
-      - Semilla reproducible
-      - MonitorWrapper para métricas en TensorBoard
-
-    Args:
-        env_id: ID del entorno (e.g. 'SuperMarioBros-v0').
-        seed: semilla RNG opcional.
-        log_dir: carpeta para los logs de TensorBoard.
-    Returns:
-        Un gym.Env listo para entrenamiento.
+    Crea un entorno de Mario compatible con Gym v26+ y CleanRL.
     """
+    env = gym.make(env_id, apply_api_compatibility=True, render_mode=render_mode)
 
- 
-    # 1) gym.make con compatibilidad de API nueva
-    env = gym.make(env_id, apply_api_compatibility=True, render_mode=None)
-
-    # 2) restringir acciones a SIMPLE_MOVEMENT
+    # ✅ Aplica JoypadSpace para trabajar con índices discretos
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    
-    env = FrameSkipWrapper(env, skip=4) 
-
-    env = MonitorWrapper(env, log_dir=log_dir)
-
-    #env = LifeResetWrapper(env)  
-
-    env = FrameCropWrapper(env, hud_height=34, crop_size=180)
-    print(env.observation_space) 
+    env = LifeResetWrapper(env)  # Resetea al perder una vida
+    env = FrameSkipWrapper(env, skip=4)
+    env = FrameCropWrapper(env, hud_height=34, crop_size=160)
     env = ResizeObservation(env, (84, 84))
-    print(env.observation_space) 
-    #env = RepaintMarioWrapper(env)
- 
     env = FilterColorsWrapper(
         env,
-        color_filters=[
-            ((84, 120, 240), (110, 170, 255), (0, 0, 0)),   # Azul → Negro 
-        ]
+        color_filters=[((84, 120, 240), (110, 170, 255), (0, 0, 0))]  # Azul → Negro
     )
-
     env = GrayScaleObservation(env, keep_dim=True)
-
     env = FrameStack(env, num_stack=4)
-    # 3) aplicar MonitorWrapper para métricas
 
     return env
+
+
+def make_vec_mario_env(num_envs=8, seed=0, async_mode=False):
+    """
+    Crea varios entornos de Mario en paralelo.
+    """
+    def make_env_fn(rank):
+        def _init():
+            env = make_mario_env(seed=seed + rank, log_dir=f"logs/env_{rank}")
+            return env
+        return _init
+
+    env_fns = [make_env_fn(i) for i in range(num_envs)]
+    return AsyncVectorEnv(env_fns) if async_mode else SyncVectorEnv(env_fns)

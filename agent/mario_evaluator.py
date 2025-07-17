@@ -16,7 +16,7 @@ class MarioRLEvaluator:
         os.makedirs(self.video_dir, exist_ok=True)
 
     def preprocess_obs(self, obs):
-        """Convierte (stack, H, W, C) -> (1, stack*C, H, W) normalizado"""
+        """Convierte (stack, H, W, C) → (1, stack*C, H, W) normalizado"""
         stack, H, W, C = obs.shape
         obs = torch.tensor(obs, dtype=torch.float32)
         obs = obs.permute(0, 3, 1, 2).reshape(1, -1, H, W)
@@ -27,18 +27,28 @@ class MarioRLEvaluator:
         Selecciona aleatoriamente una acción entre las top-k más probables,
         aplicando suavizado con temperatura para evitar políticas ultra deterministas.
         """
+        # 🔥 Asegura que sea un vector 1D
+        if isinstance(probs, torch.Tensor):
+            probs = probs.detach().cpu().numpy()
+        probs = np.squeeze(probs)  # Quita dimensiones (1, N) → (N,)
+
+        # 🔥 Ajusta k si hay menos acciones disponibles
+        k = min(k, len(probs))
+
+        # Top-k índices y probabilidades
         top_k_idx = probs.argsort()[::-1][:k]
         top_k_probs = probs[top_k_idx]
 
-        # 🔥 Aplica temperatura para suavizar
+        # 🔥 Aplica temperatura
         logits = np.log(top_k_probs + 1e-8) / temperature
         soft_probs = np.exp(logits)
         soft_probs /= soft_probs.sum()
 
+        # 🔥 Muestreo entre top-k
         return np.random.choice(top_k_idx, p=soft_probs)
 
     def load_model(self, model_path, obs_shape, n_actions):
-        """Carga siempre MarioConvLSTM"""
+        """Carga MarioConvLSTM"""
         lstm_hidden_size = 512
         print("🔄 Cargando modelo como MarioConvLSTM...")
         model = MarioConvLSTM(obs_shape, lstm_hidden_size, n_actions).to(self.device)
@@ -47,7 +57,7 @@ class MarioRLEvaluator:
         print("✅ Modelo LSTM cargado correctamente")
         return model, lstm_hidden_size
 
-    def evaluate(self, model_path, episodes=1):
+    def evaluate(self, model_path, episodes=1, exploration=False):
         obs_shape = self.env.observation_space.shape
         stack, H, W, C = obs_shape
         channels = stack * C
@@ -72,6 +82,7 @@ class MarioRLEvaluator:
             obs, _ = self.env.reset()
             done = False
             total_reward = 0
+            max_x_pos = 0
 
             # 🔥 Inicializa el hidden_state explícitamente
             hidden_state = (
@@ -80,24 +91,34 @@ class MarioRLEvaluator:
             )
 
             while not done:
-                tensor_obs = self.preprocess_obs(obs).unsqueeze(1)
+                tensor_obs = self.preprocess_obs(obs)
                 with torch.no_grad():
                     logits, _, hidden_state = model(tensor_obs, hidden_state)
                     hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
 
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
-                    action = self.k_greedy_sample(probs[0], k=3)  # 🔥 Top-k sampling
+                    
+                    # 🔥 Exploración opcional durante evaluación
+                    if exploration and np.random.rand() < 0.1:
+                        action = self.env.action_space.sample()
+                    else:
+                        action = self.k_greedy_sample(probs[0], k=3, temperature=0.8)
 
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
                 total_reward += reward
+
+                # Actualiza la posición máxima
+                if isinstance(info, dict):
+                    x_pos = info.get("x_pos", info.get("x_scroll", 0))
+                    max_x_pos = max(max_x_pos, x_pos)
 
                 # Graba frame en el video
                 frame = self.env.render()
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 out.write(frame_bgr)
 
-            print(f"🏁 Episodio {ep+1}: Total reward = {total_reward}")
+            print(f"🏁 Episodio {ep+1}: Total reward = {total_reward}, Max X = {max_x_pos}")
 
         out.release()
         self.env.close()

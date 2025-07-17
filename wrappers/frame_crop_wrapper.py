@@ -50,6 +50,7 @@ class FrameCropWrapper(gym.Wrapper):
 
     def step(self, action):
         out = self.env.step(action)
+        
         if len(out) == 5:
             obs, reward, terminated, truncated, info = out
             done = terminated or truncated

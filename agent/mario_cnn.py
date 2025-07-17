@@ -1,37 +1,54 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class MarioCNN(nn.Module):
-    def __init__(self, obs_shape, n_actions):
-        super().__init__()
+    def __init__(self, obs_shape, lstm_hidden_size, n_actions):
+        """
+        CNN para PPO compatible con la firma de MarioConvLSTM
+        """
+        super(MarioCNN, self).__init__()
         c, h, w = obs_shape  # obs_shape = (stack, H, W)
         print(f"📺 CNN Input Shape recibido: {obs_shape}")
 
-        self.feature = nn.Sequential(
+        # CNN feature extractor
+        self.feature_extractor = nn.Sequential(
             nn.Conv2d(c, 32, kernel_size=8, stride=4), nn.ReLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1), nn.ReLU(),  # + más filtros
+            nn.Conv2d(64, 128, kernel_size=3, stride=1), nn.ReLU(),
             nn.Flatten()
-        )   
+        )
 
+        # Calcula tamaño de salida para las capas lineales
         with torch.no_grad():
-            dummy = torch.zeros(1, c, h, w)
-            flat_dim = self.feature(dummy).shape[1]
+            dummy_input = torch.zeros(1, c, h, w)
+            conv_out = self.feature_extractor(dummy_input)
+            flat_dim = conv_out.shape[1]
+            print(f"📐 Flat dim after convs: {flat_dim}")
 
-        self.policy = nn.Sequential(
-            nn.Linear(flat_dim, 1024), nn.ReLU(),
-            nn.Linear(1024, 512), nn.ReLU(),
+        # Heads de política y valor
+        self.policy_head = nn.Sequential(
+            nn.Linear(flat_dim, 512), nn.ReLU(),
             nn.Linear(512, n_actions)
         )
 
-        self.value = nn.Sequential(
-            nn.Linear(flat_dim, 1024), nn.ReLU(),
-            nn.Linear(1024, 512), nn.ReLU(),
+        self.value_head = nn.Sequential(
+            nn.Linear(flat_dim, 512), nn.ReLU(),
             nn.Linear(512, 1)
         )
 
-    def forward(self, x):
-        z = self.feature(x / 255.0)  # Normaliza solo una vez
-        logits = self.policy(z)
-        value = self.value(z).squeeze(-1)
-        return logits, value
+    def forward(self, x, hidden_state=None):
+        """
+        x: (batch, C, H, W)
+        hidden_state: None (para compatibilidad con LSTM)
+        """
+        if x.ndim == 5:
+            # (steps, batch, C, H, W) -> (steps*batch, C, H, W)
+            steps, batch, C, H, W = x.shape
+            x = x.view(steps * batch, C, H, W)
+
+        z = self.feature_extractor(x / 255.0)  # Normalización
+        logits = self.policy_head(z)
+        value = self.value_head(z).squeeze(-1)
+
+        return logits, value, hidden_state  # hidden_state=None por compatibilidad
