@@ -111,23 +111,10 @@ class PPOTrainer:
                 curr_x_pos = np.array(info["x_pos"])
                 max_x_pos = np.maximum(max_x_pos, curr_x_pos)
 
-                #bonus = (curr_x_pos > max_x_pos).astype(np.float32) * 0.05
-                #normalized_reward += bonus
-
-                # # 🎯 BONOS grandes por milestones
-                # for i in range(self.num_envs):
-                #     if curr_x_pos[i] > 2000:
-                #         normalized_reward[i] += 0.5  # 🚀 Gran reward por x=2000
-                #     if curr_x_pos[i] > 2500:
-                #         normalized_reward[i] += 0.15  # 🏁 Mega reward por x=2500
-                #     if curr_x_pos[i] > 3000:
-                #         normalized_reward[i] += 0.20 # 🎉 Super reward por llegar al final
-
                 delta_x = curr_x_pos - prev_x_pos
 
                 progress_reward = delta_x * 0.01
                 normalized_reward += progress_reward
-                # normalized_reward -= np.where(delta_x < 0, 0.01, 0.0)
 
                 rewards_buf.append(normalized_reward)
                 dones_buf.append(done)
