@@ -3,73 +3,62 @@ import numpy as np
 import cv2
 import os
 import time
-from agent.mario_lstm import MarioConvLSTM
+from agent.mario_cnn import MarioCNN
 from agent.env_builder import make_mario_env
 
 class MarioRLEvaluator:
     def __init__(self, video_dir="videos", fps=30):
         self.env = make_mario_env(seed=42)
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.device = torch.device(
+            "mps" if torch.backends.mps.is_available()
+            else "cuda" if torch.cuda.is_available()
+            else "cpu"
+        )
         self.video_dir = video_dir
         self.fps = fps
 
         os.makedirs(self.video_dir, exist_ok=True)
 
     def preprocess_obs(self, obs):
-        """Convierte (stack, H, W, C) → (1, stack*C, H, W) normalizado"""
-        stack, H, W, C = obs.shape
-        obs = torch.tensor(obs, dtype=torch.float32)
-        obs = obs.permute(0, 3, 1, 2).reshape(1, -1, H, W)
+        """Convierte (stack, H, W) → (1, stack, H, W) normalizado"""
+        stack, H, W = obs.shape
+        obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # Añade batch dim
         return obs.to(self.device) / 255.0
 
     def k_greedy_sample(self, probs, k=3, temperature=1.0):
-        """
-        Selecciona aleatoriamente una acción entre las top-k más probables,
-        aplicando suavizado con temperatura para evitar políticas ultra deterministas.
-        """
-        # 🔥 Asegura que sea un vector 1D
+        """Muestreo suave entre top-k acciones"""
         if isinstance(probs, torch.Tensor):
             probs = probs.detach().cpu().numpy()
-        probs = np.squeeze(probs)  # Quita dimensiones (1, N) → (N,)
+        probs = np.squeeze(probs)  # (1, N) → (N,)
 
-        # 🔥 Ajusta k si hay menos acciones disponibles
         k = min(k, len(probs))
-
-        # Top-k índices y probabilidades
         top_k_idx = probs.argsort()[::-1][:k]
         top_k_probs = probs[top_k_idx]
 
-        # 🔥 Aplica temperatura
         logits = np.log(top_k_probs + 1e-8) / temperature
         soft_probs = np.exp(logits)
         soft_probs /= soft_probs.sum()
 
-        # 🔥 Muestreo entre top-k
         return np.random.choice(top_k_idx, p=soft_probs)
 
     def load_model(self, model_path, obs_shape, n_actions):
-        """Carga MarioConvLSTM"""
-        lstm_hidden_size = 512
-        print("🔄 Cargando modelo como MarioConvLSTM...")
-        model = MarioConvLSTM(obs_shape, lstm_hidden_size, n_actions).to(self.device)
+        """Carga modelo MarioCNN"""
+        print("🔄 Cargando modelo MarioCNN...")
+        model = MarioCNN(obs_shape, n_actions).to(self.device)
         model.load_state_dict(torch.load(model_path, map_location=self.device))
         model.eval()
-        print("✅ Modelo LSTM cargado correctamente")
-        return model, lstm_hidden_size
+        print("✅ Modelo CNN cargado correctamente")
+        return model
 
-    def evaluate(self, model_path, episodes=1, exploration=False):
-        obs_shape = self.env.observation_space.shape
-        stack, H, W, C = obs_shape
-        channels = stack * C
+    def evaluate(self, model_path, episodes=1, exploration=True):
+        obs_shape = self.env.observation_space.shape  # (stack, H, W)
+        stack, H, W = obs_shape
 
-        # Cargar modelo
-        model, lstm_hidden_size = self.load_model(model_path, (channels, H, W), self.env.action_space.n)
+        model = self.load_model(model_path, (stack, H, W), self.env.action_space.n)
 
-        # Nombre único para el video
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        video_path = os.path.join(self.video_dir, f"mario_eval_{timestamp}.mp4")
+        video_path = os.path.join(self.video_dir, f"mario_cnn_eval_{timestamp}.mp4")
 
-        # Inicializa VideoWriter
         obs, _ = self.env.reset()
         frame = self.env.render()
         frame_height, frame_width = frame.shape[:2]
@@ -83,37 +72,37 @@ class MarioRLEvaluator:
             done = False
             total_reward = 0
             max_x_pos = 0
-
-            # 🔥 Inicializa el hidden_state explícitamente
-            hidden_state = (
-                torch.zeros(1, 1, lstm_hidden_size).to(self.device),
-                torch.zeros(1, 1, lstm_hidden_size).to(self.device)
-            )
+            step = 0
 
             while not done:
+                step += 1
                 tensor_obs = self.preprocess_obs(obs)
                 with torch.no_grad():
-                    logits, _, hidden_state = model(tensor_obs, hidden_state)
-                    hidden_state = (hidden_state[0].detach(), hidden_state[1].detach())
-
+                    logits, _ = model(tensor_obs)
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
-                    
-                    # 🔥 Exploración opcional durante evaluación
-                    if exploration and np.random.rand() < 0.1:
+
+                noop_interval = 4
+
+                # NOOP cada 5 pasos para simular “soltar botones”
+                if step % noop_interval == 0:
+                    action = 0  # NOOP
+                    print(f"🔄 Paso {step}: NOOP")
+                else:
+                    if exploration and np.random.rand() < 0.2:
                         action = self.env.action_space.sample()
+                        print(f"🎲 Paso {step}: acción aleatoria {action}")
                     else:
-                        action = self.k_greedy_sample(probs[0], k=3, temperature=0.8)
+                        action = self.k_greedy_sample(probs[0], k=3, temperature=2)
+                        print(f"🎯 Paso {step}: acción elegida {action}")
+                print(f"Acción elegida: {action} (Exploración: {exploration})")
 
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 done = terminated or truncated
                 total_reward += reward
 
-                # Actualiza la posición máxima
-                if isinstance(info, dict):
-                    x_pos = info.get("x_pos", info.get("x_scroll", 0))
-                    max_x_pos = max(max_x_pos, x_pos)
+                x_pos = info.get("x_pos", info.get("x_scroll", 0))
+                max_x_pos = max(max_x_pos, x_pos)
 
-                # Graba frame en el video
                 frame = self.env.render()
                 frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 out.write(frame_bgr)

@@ -20,7 +20,7 @@ def make_mario_env(env_id="SuperMarioBros-v0", seed=None, log_dir="logs_cleanrl"
 
     # ✅ Aplica JoypadSpace para trabajar con índices discretos
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
-    env = LifeResetWrapper(env)  # Resetea al perder una vida
+    #env = LifeResetWrapper(env)  # Resetea al perder una vida
     env = FrameSkipWrapper(env, skip=4)
     env = FrameCropWrapper(env, hud_height=34, crop_size=200)
     env = ResizeObservation(env, (84, 84))

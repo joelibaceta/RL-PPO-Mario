@@ -1,5 +1,6 @@
 import argparse
 from agent.mario_trainer import MarioTrainer
+from agent.mario_ppo_trainer import PPOTrainer
 from agent.mario_evaluator import MarioRLEvaluator
 from agent.env_builder import make_mario_env
 
@@ -28,15 +29,7 @@ def main():
 
     if args.command == "train":
         print(f"🚀 Entrenando Mario PPO con {args.timesteps} timesteps en {args.num_envs} entornos...")
-        trainer = MarioTrainer(
-            total_timesteps=args.timesteps,
-            learning_rate=args.learning_rate,
-            num_steps=args.num_steps,
-            update_epochs=args.update_epochs,
-            model_dir=args.model_dir,
-            model_name=args.model_name,
-            num_envs=args.num_envs  # 👈 PASA EL NUEVO ARGUMENTO
-        )
+        trainer = PPOTrainer()
         trainer.train()
 
     elif args.command == "eval":
