@@ -5,17 +5,18 @@ import torch.nn.functional as F
 class MarioCNN(nn.Module):
     def __init__(self, obs_shape, lstm_hidden_size, n_actions):
         """
-        CNN para PPO compatible con la firma de MarioConvLSTM
+        CNN ligera basada en la arquitectura clásica de DeepMind.
+        Compatible con la firma de MarioConvLSTM.
         """
         super(MarioCNN, self).__init__()
         c, h, w = obs_shape  # obs_shape = (stack, H, W)
         print(f"📺 CNN Input Shape recibido: {obs_shape}")
 
-        # CNN feature extractor
+        # CNN feature extractor (más ligera)
         self.feature_extractor = nn.Sequential(
-            nn.Conv2d(c, 32, kernel_size=8, stride=4), nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2), nn.ReLU(),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1), nn.ReLU(),
+            nn.Conv2d(c, 16, kernel_size=8, stride=4), nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=4, stride=2), nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1), nn.ReLU(),
             nn.Flatten()
         )
 
@@ -26,15 +27,15 @@ class MarioCNN(nn.Module):
             flat_dim = conv_out.shape[1]
             print(f"📐 Flat dim after convs: {flat_dim}")
 
-        # Heads de política y valor
+        # Heads de política y valor (256 unidades)
         self.policy_head = nn.Sequential(
-            nn.Linear(flat_dim, 512), nn.ReLU(),
-            nn.Linear(512, n_actions)
+            nn.Linear(flat_dim, 256), nn.ReLU(),
+            nn.Linear(256, n_actions)
         )
 
         self.value_head = nn.Sequential(
-            nn.Linear(flat_dim, 512), nn.ReLU(),
-            nn.Linear(512, 1)
+            nn.Linear(flat_dim, 256), nn.ReLU(),
+            nn.Linear(256, 1)
         )
 
     def forward(self, x, hidden_state=None):

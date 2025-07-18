@@ -22,12 +22,12 @@ def make_mario_env(env_id="SuperMarioBros-v0", seed=None, log_dir="logs_cleanrl"
     env = JoypadSpace(env, SIMPLE_MOVEMENT)
     env = LifeResetWrapper(env)  # Resetea al perder una vida
     env = FrameSkipWrapper(env, skip=4)
-    env = FrameCropWrapper(env, hud_height=34, crop_size=160)
+    env = FrameCropWrapper(env, hud_height=34, crop_size=200)
     env = ResizeObservation(env, (84, 84))
-    env = FilterColorsWrapper(
-        env,
-        color_filters=[((84, 120, 240), (110, 170, 255), (0, 0, 0))]  # Azul → Negro
-    )
+    #env = FilterColorsWrapper(
+    #    env,
+    #    color_filters=[((84, 120, 240), (110, 170, 255), (0, 0, 0))]  # Azul → Negro
+    #)
     env = GrayScaleObservation(env, keep_dim=True)
     env = FrameStack(env, num_stack=4)
 

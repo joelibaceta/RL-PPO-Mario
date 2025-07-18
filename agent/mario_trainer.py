@@ -15,51 +15,22 @@ from gym_super_mario_bros.actions import SIMPLE_MOVEMENT
 from collections import Counter
 
 from torch.utils.tensorboard import SummaryWriter
+from utils.reward_normalizer import RewardNormalizer
 
-class RewardNormalizer:
-    def __init__(self, epsilon=1e-8, clip_range=(-1.0, 1.0), alpha=0.999):
-        self.mean = 0.0
-        self.var = 1.0
-        self.alpha = alpha  # tasa de actualización exponencial
-        self.epsilon = epsilon
-        self.clip_range = clip_range
-
-    def normalize(self, rewards):
-        """
-        Normaliza un escalar o un array de recompensas.
-        Si rewards es un array (multi-env), actualiza estadísticas globales.
-        """
-        rewards = np.asarray(rewards, dtype=np.float32)
-
-        # Calcula media y varianza del batch actual
-        batch_mean = rewards.mean()
-        batch_var  = rewards.var()
-
-        # Actualiza estadísticas globales con promedio exponencial
-        self.mean = self.alpha * self.mean + (1 - self.alpha) * batch_mean
-        self.var  = self.alpha * self.var  + (1 - self.alpha) * batch_var
-
-        # Normaliza y recorta
-        std = np.sqrt(self.var) + self.epsilon
-        normalized = (rewards - self.mean) / std
-        clipped = np.clip(normalized, *self.clip_range)
-
-        return clipped
 class MarioTrainer:
     def __init__(self,
                  total_timesteps=1_000_000,
-                 learning_rate=1e-4,
-                 num_steps=1024,
-                 update_epochs=8,
+                 learning_rate=2.5e-4,
+                 num_steps=256,
+                 update_epochs=4,
                  gamma=0.99,
-                 gae_lambda=0.99,
-                 clip_coef=0.05,
-                 ent_coef=0.1,  
+                 gae_lambda=0.95,
+                 clip_coef=0.2,
+                 ent_coef=0.05,  
                  vf_coef=0.5,
                  noop_interval=5,
                  max_grad_norm=0.5,
                  exploration_ratio=0.2,
-                 seed=0,
                  model_dir="models_cleanrl",
                  model_name="ppo_mario_cleanrl.pth",
                  num_envs=10):
@@ -79,16 +50,11 @@ class MarioTrainer:
         self.seed = random.seed(1000)
         self.num_envs = num_envs
         self.noop_interval = noop_interval
-
         self.action_counter = Counter()
-
         self.reward_normalizer = RewardNormalizer()
-
         self.current_episode_rewards = np.zeros(self.num_envs, dtype=np.float32)
 
-        # Dispositivo
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-        print(f"⚡️ Usando dispositivo: {self.device}")
+        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu") # Dispositivo
 
         # Directorio para guardar modelo
         self.model_dir = model_dir
@@ -98,7 +64,6 @@ class MarioTrainer:
         run_name = time.strftime("run_%Y%m%d_%H%M%S")
         self.writer = SummaryWriter(log_dir=f"logs/env_{self.seed}/run_{run_name}")
         print(f"📓 TensorBoard logs en: logs/env_{self.seed}/run_{run_name}")
-
 
         self.update_count = 0
         self.update_start_time = time.time()
@@ -138,11 +103,6 @@ class MarioTrainer:
         self.dones_buf = np.zeros((self.num_steps, self.num_envs), dtype=np.float32)
         self.values_buf = np.zeros((self.num_steps, self.num_envs), dtype=np.float32)
 
-    def linear_schedule(initial_value):
-        def func(progress_remaining):
-            return progress_remaining * initial_value
-        return func
-
     def preprocess_obs(self, obs):
         """
         Convierte:
@@ -151,12 +111,10 @@ class MarioTrainer:
         """
         obs = torch.tensor(obs, dtype=torch.float32)
 
-        if obs.ndim == 5:
-            # Multi-env: (num_envs, stack, H, W, C)
+        if obs.ndim == 5: # Multi-env: (num_envs, stack, H, W, C)
             obs = obs.permute(0, 1, 4, 2, 3)  # (num_envs, stack, C, H, W)
             obs = obs.reshape(obs.shape[0], -1, obs.shape[-2], obs.shape[-1])  # (num_envs, stack*C, H, W)
-        elif obs.ndim == 4:
-            # Single env: (stack, H, W, C)
+        elif obs.ndim == 4: # Single env: (stack, H, W, C)
             obs = obs.permute(0, 3, 1, 2)  # (stack, C, H, W)
             obs = obs.reshape(1, -1, obs.shape[-2], obs.shape[-1])  # (1, stack*C, H, W)
         else:
@@ -178,28 +136,21 @@ class MarioTrainer:
     
     def random_noop_start(self, env, max_steps=30):
         """
-        Avanza durante unos pasos al inicio con acciones hacia adelante,
-        intercalando NOOPs para evitar que Mario se quede con un botón presionado.
+        Realiza pasos aleatorios al inicio para diversificar el estado inicial.
+        Reinicia solo los entornos que terminen durante el warm-up.
         """
-        forward_actions = [1, 2, 3, 4]  # índices en SIMPLE_MOVEMENT
+        obs, _ = env.reset()
 
         for step in range(max_steps):
-            if step % 2 == 0:
-                # 🛑 NOOP: soltar botones
-                actions = [0 for _ in range(env.num_envs)]  # acción NOOP
-            else:
-                # 🎮 Avanzar con una acción hacia adelante
-                actions = [random.choice(forward_actions) for _ in range(env.num_envs)]
-
+            actions = [random.randint(0, env.single_action_space.n - 1)
+                    for _ in range(env.num_envs)]
             obs, _, terminated, truncated, _ = env.step(actions)
 
-            # Reinicia los entornos que terminen durante estos pasos
-            if np.any(terminated) or np.any(truncated):
-                obs_reset, _ = env.reset()
-                for i in range(env.num_envs):
-                    if terminated[i] or truncated[i]:
-                        obs[i] = obs_reset[i]
-
+            # Reinicia solo los envs que terminaron
+            for i, (term, trunc) in enumerate(zip(terminated, truncated)):
+                if term or trunc:
+                    obs_i, _ = env.reset()
+                    obs[i] = obs_i[i]
         return obs
                         
     def visualize_activations(self, obs, num_filters=8):
@@ -276,10 +227,6 @@ class MarioTrainer:
 
         return np.random.choice(top_k_idx, p=soft_probs)
     
-    def lazy_decay(self, progress):
- 
-         return 0.2 * (1 / (1 + math.exp(10 * (progress - 0.8))))
-    
     def record_video(self, update, video_length=1000, fps=30):
         """
         Graba un video del agente jugando durante `video_length` steps usando OpenCV.
@@ -354,28 +301,12 @@ class MarioTrainer:
 
         total_updates = self.total_timesteps // self.num_steps
 
-        print(f"🧵 PyTorch usando {torch.get_num_threads()} hilos")
-
         for update in tqdm(range(1, total_updates + 1), desc="📈 Entrenando PPO", unit="update"):
             self.update_start_time = time.time()
             
             progress = update / total_updates 
+            self.ent_coef = max(0.02, 0.03 * (1 - progress * 0.3))
 
-            # 🔥 Annealing del learning rate
-            # lr = self.learning_rate * (1 - progress)
-            # for param_group in self.optimizer.param_groups:
-            #     param_group['lr'] = lr
-
-            # 🔥 Annealing de entropy coeficiente
-            # self.ent_coef =  0.01 + (0.2 - 0.01) * (1 / (1 + math.exp(10 * (progress - 0.8))))
-
-            # if update % 50 == 0:  # 🎥 Guarda video cada 50 updates
-            #     print(f"🎥 Generando video en update {update}...")
-            #     self.record_video(update)
-
-             
-
-            # Rollout
             for step in range(self.num_steps):
                 
                 self.episode_length += 1
@@ -396,10 +327,9 @@ class MarioTrainer:
                 dist = Categorical(logits=logits)
 
                 # Exploración
-                epsilon = max(0.05, 0.1 * (1 - progress))
+                epsilon = max(0.05, 0.1 * (1 - progress**2))
                 #topk_bias = 0.05 + 0.95 * (1 / (1 + math.exp(5 * (progress - 0.7))))
                 self.writer.add_scalar("loss/epsilon", epsilon, self.update_count)
-
                 
                 if torch.rand(1).item() < epsilon:
                     # Exploración más agresiva: completamente aleatoria
@@ -416,54 +346,45 @@ class MarioTrainer:
                 actions = np.array(actions, dtype=np.int32) 
                 next_obs, rewards, terminated, truncated, infos = self.env.step(actions.flatten().tolist())
                 dones = np.logical_or(terminated, truncated)
-
                 rewards = self.reward_normalizer.normalize(rewards)
 
-                if isinstance(infos, dict):
-                    # Si es un dict con claves por entorno
-                    infos_list = infos.get("env", infos)
-                elif isinstance(infos, (list, tuple)):
-                    infos_list = infos
-                else:
+                try:
+                    infos_list = infos.get("env", infos) if isinstance(infos, dict) else list(infos)
+                except Exception:
                     raise TypeError(f"Formato inesperado en infos: {type(infos)}")
 
-                # Extrae x_pos o x_scroll
                 if isinstance(infos, dict):
                     curr_x_pos = np.array(infos.get("x_pos", infos.get("x_scroll", [0]*self.num_envs)))
                 else:
                     curr_x_pos = np.array([info.get("x_pos", info.get("x_scroll", 0)) for info in infos])
+
                 curr_x_pos = curr_x_pos[:self.num_envs]
 
                 self.current_max_x_positions = np.maximum(self.current_max_x_positions, curr_x_pos)
 
-                #rewards += np.clip((curr_x_pos - prev_x_pos) / 10.0, -1.0, 1.0)
-                
-                #reward -= 0.05  # penaliza quedarse quieto
+                # rewards += np.clip((curr_x_pos - prev_x_pos) / 10.0, -1.0, 1.0)
 
                 self.action_counter.update(actions.tolist())
 
-                for i in range(num_envs):
-                    if int(actions[i]) in (2, 4):  # saltar o saltar+avanzar
-                        rewards[i] += 0.005
-                        if curr_x_pos[i] > prev_x_pos[i]:
-                            rewards[i] += (curr_x_pos[i] - prev_x_pos[i]) * 0.001
-                        else:
-                            rewards[i] -= 0.01
+                # for i in range(num_envs):
+                #     if int(actions[i]) in (2, 3, 4):  # saltar o saltar+avanzar
+                #         rewards[i] += 0.005
+                #         if curr_x_pos[i] > prev_x_pos[i]:
+                #             rewards[i] += (curr_x_pos[i] - prev_x_pos[i]) * 0.001
+                #         else:
+                #             rewards[i] -= 0.01
 
-                    rewards[i] += np.clip((curr_x_pos[i] - prev_x_pos[i]) / 10.0, -1.0, 1.0)
+                #     rewards[i] += np.clip((curr_x_pos[i] - prev_x_pos[i]) / 10.0, -1.0, 1.0)
 
                 # Penaliza quedarse quieto
-
-
-                if curr_x_pos[i] <= prev_x_pos[i]:
-                    rewards[i] -= 0.005
+                # if curr_x_pos[i] <= prev_x_pos[i]:
+                #     rewards[i] -= 0.005
                 
-                if curr_x_pos[i] > max_x_pos[i]:
-                    max_x_pos[i] = curr_x_pos[i]
-                    rewards[i] += 0.005
+                # if curr_x_pos[i] > max_x_pos[i]:
+                #     max_x_pos[i] = curr_x_pos[i]
+                #     rewards[i] += 0.005
 
                 self.current_episode_rewards += rewards
-
 
                 prev_x_pos = curr_x_pos.copy()
  
@@ -472,6 +393,7 @@ class MarioTrainer:
                 self.logprobs_buf[step] = logprobs
                 self.rewards_buf[step] = rewards
                 self.dones_buf[step] = dones
+
                 if isinstance(values, torch.Tensor):
                     self.values_buf[step] = values.detach().cpu().numpy()
                 else:
@@ -481,9 +403,6 @@ class MarioTrainer:
 
                 for i in range(num_envs):
                     if dones[i]:
-                        # Reinicia episodio para este entorno
-
-                        # 📸 Guarda snapshot antes de reiniciar usando la última observación
                         obs_frame = self.obs_buf[step, i]  # (stack, H, W, C)
 
                         # Convierte de Torch Tensor si es necesario
@@ -508,18 +427,14 @@ class MarioTrainer:
                         cv2.imwrite(snapshot_path, obs_frame_bgr)
                         print(f"📸 Snapshot guardado: {snapshot_path}")
                         rewards[i] -= 1.0
-                        # Bonificación por avance
-                          # nueva posición máxima
 
-                        
-
-                        # if curr_x_pos[i] > 800:  rewards[i] += 0.1
-                        if curr_x_pos[i] > 1000: rewards[i] += 0.2
-                        if curr_x_pos[i] > 1200: rewards[i] += 0.3
-                        # if curr_x_pos[i] > 1500: rewards[i] += 0.4
-                        # if curr_x_pos[i] > 2000: rewards[i] += 0.5
-                        # if curr_x_pos[i] > 2500: rewards[i] += 0.6
-                        # if curr_x_pos[i] > 3000: rewards[i] += 0.7
+                        #if curr_x_pos[i] > 800:  rewards[i] += 0.1
+                        #if curr_x_pos[i] > 1000: rewards[i] += 0.2
+                        #if curr_x_pos[i] > 1200: rewards[i] += 0.3
+                        #if curr_x_pos[i] > 1500: rewards[i] += 0.4
+                        #if curr_x_pos[i] > 2000: rewards[i] += 0.5
+                        #if curr_x_pos[i] > 2500: rewards[i] += 0.6
+                        #if curr_x_pos[i] > 3000: rewards[i] += 0.7
 
                         self.update_episode_lengths.append(self.current_episode_lengths[i])
                         self.update_episode_rewards.append(self.current_episode_rewards[i])
@@ -528,7 +443,6 @@ class MarioTrainer:
                         self.update_deaths += 1
                         self.episode_length = 0
                         prev_x_pos[i] = 0.0
-
 
                         # Reinicia solo el entorno i
                         obs_all, _ = self.env.reset()
@@ -555,9 +469,6 @@ class MarioTrainer:
 
                         # # ⚡️ Salimos del warm-up con un estado más “rico”
                         # next_obs[i] = obs_all[i]
-
-
-
 
             # GAE y PPO
             avg_x_pos = np.mean(self.current_max_x_positions)
@@ -597,15 +508,13 @@ class MarioTrainer:
         tensor_next_obs = self.preprocess_obs(obs)  # shape: (num_envs, C, H, W)
         _, next_values, _ = self.model(tensor_next_obs.unsqueeze(0), hidden_state)
         next_values = next_values.squeeze(0).detach().cpu().numpy()
-
-        # Calcula GAE
-        all_returns = []
+        
+        all_returns = [] # Calcula GAE
 
         total = sum(self.action_counter.values())
         for action_id, count in self.action_counter.items():
             proportion = count / total
             self.writer.add_scalar(f"actions/action_{action_id}_proportion", proportion, self.update_count)
-
 
         for env_idx in range(self.num_envs):
             env_rewards = self.rewards_buf[:, env_idx]  # shape: (steps,)
@@ -644,9 +553,6 @@ class MarioTrainer:
                 torch.zeros(1, self.num_envs, 512).to(self.device),
             )
 
-            #tensor_obs = tensor_obs.view(self.num_steps, self.num_envs, *tensor_obs.shape[1:]) 
-
-
             logits, value, hidden_state = self.model(tensor_obs, expanded_hidden_state)
 
             # Detach hidden_state
@@ -680,7 +586,6 @@ class MarioTrainer:
             self.optimizer.zero_grad()
             loss.backward()
 
-
             nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
             total_grad_norm = torch.norm(torch.stack([
@@ -690,8 +595,6 @@ class MarioTrainer:
             ]), 2)
 
             self.writer.add_scalar("gradients/total_grad_norm", total_grad_norm, self.update_count)
-
-
             self.optimizer.step()
 
             # Early stopping
@@ -702,7 +605,6 @@ class MarioTrainer:
                 if approx_kl > target_kl:
                     print(f"🚨 Early stopping at epoch {epoch} due to KL={approx_kl:.4f} (target={target_kl:.4f})")
                     break
-
 
         elapsed = time.time() - self.update_start_time
         fps = self.num_steps * self.num_envs / elapsed

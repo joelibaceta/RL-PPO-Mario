@@ -33,7 +33,6 @@ def main():
             learning_rate=args.learning_rate,
             num_steps=args.num_steps,
             update_epochs=args.update_epochs,
-            seed=args.seed,
             model_dir=args.model_dir,
             model_name=args.model_name,
             num_envs=args.num_envs  # 👈 PASA EL NUEVO ARGUMENTO
