@@ -1,33 +1,140 @@
-# RL-PPO-Mario
+# PPO Mario Agent 🕹️
 
-A Reinforcement Learning implementation using PPO (Proximal Policy Optimization) to train an agent to play Super Mario Bros. 
+Este proyecto implementa un agente **Proximal Policy Optimization (PPO)** para jugar *Super Mario Bros*, utilizando PyTorch y un entorno personalizado basado en `gym-super-mario-bros`. Incluye una CNN como policy network, normalización de recompensas y varios mecanismos para estabilidad del entrenamiento.
 
-## Recent Migration to mo-gymnasium
+---
 
-This project has been migrated from `gym-super-mario-bros` to `mo-gymnasium` for better compatibility with:
-- 🍎 Apple Silicon (M1/M2) - no more compilation issues
-- 🔄 Gymnasium API - fully compatible with modern RL libraries  
-- 📦 Simplified dependencies - no more `nes-py` complications
-- 🏃‍♂️ Stable Baselines3 - seamless integration
+## 📜 Contenido
 
-### Key Changes
-- **Environment**: Now uses `mo-supermario-v0` instead of `SuperMarioBros-v0`
-- **Action Space**: Simplified to 7 actions (compatible with original SIMPLE_MOVEMENT)
-- **Rewards**: Multi-objective rewards automatically converted to scalar
-- **API**: Full Gymnasium API compliance
+- [Arquitectura CNN](#arquitectura-cnn)
+- [Entrenador PPO](#entrenador-ppo)
+- [Hiperparámetros](#hiperparámetros)
+- [Construcción del entorno](#construcción-del-entorno)
+- [Uso](#uso)
 
-## Quick Start
+---
+
+## 🧠 Arquitectura CNN
+
+La policy/value network usa una CNN ligera que procesa stacks de 4 frames para capturar información temporal.
+
+```
+Input: (4, 84, 84)
+
+Conv2D(4, 32, kernel_size=8, stride=4) → ReLU
+Conv2D(32, 64, kernel_size=4, stride=2) → ReLU
+Conv2D(64, 64, kernel_size=3, stride=1) → ReLU
+Flatten
+FC(3136, 512) → ReLU
+Output policy logits: FC(512, n_actions)
+Output value: FC(512, 1)
+```
+
+- **Policy head**: genera logits para la distribución categórica sobre acciones.
+- **Value head**: estima el valor del estado para ventaja.
+
+---
+
+## 🏋️‍♂️ Entrenador PPO
+
+El entrenamiento sigue un ciclo:
+
+1. **Rollout**:
+
+   - Ejecuta la política actual durante `num_steps` en `num_envs` entornos paralelos.
+   - Guarda: observaciones, acciones, logprobs, recompensas normalizadas.
+
+2. **Ventaja (GAE)**:
+
+   - Estima ventajas con *Generalized Advantage Estimation*.
+
+3. **Actualización PPO**:
+
+   - Calcula la pérdida de política con clipping: \(\min(ratio \cdot A, clip(ratio) \cdot A)\)
+   - Añade pérdida de valor y entropía.
+   - Early stopping o rollback si el KL-divergence supera el target.
+
+4. **Logging**:
+
+   - Guarda métricas en TensorBoard: reward promedio, max\_x\_pos, entropía, proporción de acciones.
+
+---
+
+## ⚙️ Hiperparámetros
+
+| Parámetro         | Valor     | Descripción                                                |
+| ----------------- | --------- | ---------------------------------------------------------- |
+| `total_timesteps` | 1,000,000 | Total de pasos de entrenamiento.                           |
+| `lr`              | 2.5e-4    | Learning rate inicial, decae en el tiempo.                 |
+| `gamma`           | 0.99      | Factor de descuento de recompensas.                        |
+| `gae_lambda`      | 0.98      | Mezcla bias-variance en ventajas.                          |
+| `clip_coef`       | 0.2       | Límite de clipping en ratio PPO.                           |
+| `entropy_coef`    | Dinámico  | Incentiva la exploración (disminuye con los updates).      |
+| `epsilon`         | Dinámico  | Probabilidad de exploración aleatoria, nunca menor a 0.05. |
+| `num_envs`        | 8         | Número de entornos paralelos para colectar experiencias.   |
+| `num_steps`       | 128       | Pasos por rollout antes de actualizar.                     |
+
+**Técnicas adicionales**:
+
+- Normalización online de recompensas.
+- Penalización a retrocesos (para evitar que el agente se quede bloqueado).
+- Bonificaciones por milestones en X para incentivar el progreso.
+- Decaimiento de learning rate.
+
+---
+
+## 🌱 Construcción del entorno
+
+El entorno se compone de varias capas:
+
+- ``: apila 4 frames para incluir información temporal.
+- ``: convierte a escala de grises para simplificar la entrada.
+- ``: reduce a 84x84 para eficiencia.
+- ``: añade bonificaciones y penalizaciones personalizadas.
+- ``: ejecuta múltiples copias del entorno en paralelo.
+
+---
+
+## 🚀 Uso
+
+1. Instalar dependencias:
 
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Test the migration
-python test_mo_gymnasium_migration.py
-
-# Train the agent
-python main.py --mode train --timesteps 1000000
-
-# Evaluate the agent
-python main.py --mode eval --render
 ```
+
+2. Entrenar el agente:
+
+```bash
+python cli.py
+```
+
+3. Visualizar métricas en TensorBoard:
+
+```bash
+tensorboard --logdir=runs
+```
+
+4. Evaluar el modelo entrenado:
+
+```bash
+python evaluate.py --model ppo_mario.pth
+```
+
+---
+
+## 📈 Métricas registradas
+
+- `episode_reward`: Recompensa promedio por episodio.
+- `max_x_pos`: Máximo progreso horizontal alcanzado.
+- `avg_x_pos`: Progreso promedio por update.
+- `policy_entropy`: Diversidad de acciones elegidas.
+- Proporción de cada acción.
+
+---
+
+## 📌 Notas
+
+- El agente usa PPO con **early stopping** y rollback para evitar colapsos.
+
+
