@@ -22,7 +22,7 @@ class PPOTrainer:
         gae_lambda=0.98,
         clip_coef=0.2,
         update_epochs=4,
-        batch_size=256,
+        batch_size=512,
         num_envs=8,
     ):
 
@@ -193,6 +193,9 @@ class PPOTrainer:
                 # PPO Updates
                 for epoch in range(self.update_epochs):
                     logits, values = self.model(obs_tensor)
+                    if torch.isnan(logits).any():
+                        print("🚨 NaN detected in logits")
+                        continue
                     dist = Categorical(logits=logits)
                     new_logprobs = dist.log_prob(actions_tensor)
                     ratio = (new_logprobs - logprobs_tensor).exp()
@@ -208,7 +211,7 @@ class PPOTrainer:
 
                     # Value loss
                     value_loss = nn.functional.mse_loss(values.squeeze(-1), returns_tensor)
-                    entropy_coef = max(0.05, 0.1 * (1 - (update / total_updates) ** 0.5))
+                    entropy_coef = max(0.05, 0.15 * (1 - (update / total_updates) ** 0.5))
 
                     # Total loss
                     loss = ( policy_loss + 0.5 * value_loss - entropy_coef * dist.entropy().mean() )

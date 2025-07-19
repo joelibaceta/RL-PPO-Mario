@@ -145,6 +145,14 @@ python evaluate.py --model ppo_mario.pth
 
 ## 💡 Sugerencias de mejoras
 
+Progreso hasta el momento:
+<center>
+     <img src="figs/Progreso.gif" alt="Progreso del agente" width="300">
+</center>
+
+- Implementar una etapa de pre-entrenamiento con movimientos aleatorios para diversificar la experiencia inicial.
+- Implementar una etapa sin movimiento para dejar que el entorno cambie y diversificar la experiencia.
+- Probar con diferentes arquitecturas de CNN y comparar resultados (Quizas incluir una capa LSTM).
 - Probar diferentes combinaciones de hiperparámetros y documentar resultados.
 - Crear un script para entrenamiento múltiple con hiperparámetros variados.
 - Grabar un video del mejor episodio durante el entrenamiento (con OpenCV).
