@@ -85,13 +85,18 @@ El entrenamiento sigue un ciclo:
 
 ## 🌱 Construcción del entorno
 
-El entorno se compone de varias capas:
+El entorno utiliza *wrappers* personalizados y de `gym` para preparar los datos de entrada y gestionar la interacción del agente con el juego:
 
-- ``: apila 4 frames para incluir información temporal.
-- ``: convierte a escala de grises para simplificar la entrada.
-- ``: reduce a 84x84 para eficiencia.
-- ``: añade bonificaciones y penalizaciones personalizadas.
-- ``: ejecuta múltiples copias del entorno en paralelo.
+- **FrameStack**: apila 4 frames para incluir información temporal.
+- **GrayScaleObservation**: convierte a escala de grises para simplificar la entrada.
+- **ResizeObservation**: reduce las imágenes a 84x84 píxeles para eficiencia.
+- **FrameSkipWrapper**: omite frames para acelerar la simulación.
+- **FrameCropWrapper**: recorta la HUD para evitar información redundante.
+- **LifeResetWrapper** (opcional): reinicia el entorno al perder una vida.
+- **FilterColorsWrapper** (opcional): filtra colores específicos.
+- **Vector Envs (Sync/Async)**: ejecuta múltiples copias del entorno en paralelo para mejorar la eficiencia de recolección de datos.
+
+Estos *wrappers* permiten un procesamiento más rápido y estable durante el entrenamiento.
 
 ---
 
