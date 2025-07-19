@@ -28,7 +28,7 @@ def make_mario_env(env_id="SuperMarioBros-v0", seed=None, log_dir="logs_cleanrl"
     #    env,
     #    color_filters=[((84, 120, 240), (110, 170, 255), (0, 0, 0))]  # Azul → Negro
     #)
-    env = GrayScaleObservation(env, keep_dim=True)
+    env = GrayScaleObservation(env, keep_dim=False)
     env = FrameStack(env, num_stack=4)
 
     return env

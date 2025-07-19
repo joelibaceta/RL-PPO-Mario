@@ -1,5 +1,4 @@
-import argparse
-from agent.mario_trainer import MarioTrainer
+import argparse 
 from agent.mario_ppo_trainer import PPOTrainer
 from agent.mario_evaluator import MarioRLEvaluator
 from agent.env_builder import make_mario_env

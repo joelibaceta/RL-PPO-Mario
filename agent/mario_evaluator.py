@@ -81,7 +81,7 @@ class MarioRLEvaluator:
                     logits, _ = model(tensor_obs)
                     probs = torch.softmax(logits, dim=1).cpu().numpy()
 
-                noop_interval = 4
+                noop_interval = 6
 
                 # NOOP cada 5 pasos para simular “soltar botones”
                 if step % noop_interval == 0:
