@@ -143,3 +143,14 @@ python evaluate.py --model ppo_mario.pth
 - El agente usa PPO con **early stopping** y rollback para evitar colapsos.
 
 
+## 💡 Sugerencias de mejoras
+
+- Probar diferentes combinaciones de hiperparámetros y documentar resultados.
+- Crear un script para entrenamiento múltiple con hiperparámetros variados.
+- Grabar un video del mejor episodio durante el entrenamiento (con OpenCV).
+- Agregar métricas adicionales: epsilon, learning rate, duración de episodios.
+- Probar con el rango de acciones `RIGHT_ONLY` en lugar de `SIMPLE_MOVEMENT`.
+- Incorporar recompensas progresivas por superar posiciones X (checkpoints: 1500, 2000, 3000).
+- Penalizar retrocesos o quedarse quieto demasiado tiempo.
+- Incluir recompensas por recolectar monedas o eliminar enemigos.
+- Experimentar con un *replay buffer* para estabilizar el aprendizaje.
