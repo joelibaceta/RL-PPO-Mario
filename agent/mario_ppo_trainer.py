@@ -22,7 +22,7 @@ class PPOTrainer:
         gae_lambda=0.98,
         clip_coef=0.2,
         update_epochs=4,
-        batch_size=512,
+        batch_size=256,
         num_envs=8,
     ):
 
