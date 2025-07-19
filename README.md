@@ -147,7 +147,7 @@ python evaluate.py --model ppo_mario.pth
 
 Progreso hasta el momento:
 <center>
-     <img src="figs/ProgresoOptimized.gif" alt="Progreso del agente" width="300">
+     <img src="figs/ProgresoOptimized.gif" alt="Progreso del agente" width="300" float="center">
 </center>
 
 - Implementar una etapa de pre-entrenamiento con movimientos aleatorios para diversificar la experiencia inicial.
