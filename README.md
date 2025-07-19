@@ -50,7 +50,8 @@ El entrenamiento sigue un ciclo:
 
 3. **Actualización PPO**:
 
-   - Calcula la pérdida de política con clipping: \(\min(ratio \cdot A, clip(ratio) \cdot A)\)
+   - Calcula la pérdida de política con *clipping*:  
+$\min(\text{ratio} \cdot A, \text{clip}(\text{ratio}) \cdot A)$
    - Añade pérdida de valor y entropía.
    - Early stopping o rollback si el KL-divergence supera el target.
 
