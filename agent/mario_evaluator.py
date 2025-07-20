@@ -25,19 +25,30 @@ class MarioRLEvaluator:
         obs = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)  # Añade batch dim
         return obs.to(self.device) / 255.0
 
-    def k_greedy_sample(self, probs, k=3, temperature=1.0):
-        """Muestreo suave entre top-k acciones"""
+ 
+
+    def k_greedy_sample(self, probs, k=3, temperature=1.0, min_prob=0.05):
+        """
+        Suaviza el muestreo entre top-k acciones con probabilidad mínima forzada.
+        """
         if isinstance(probs, torch.Tensor):
             probs = probs.detach().cpu().numpy()
-        probs = np.squeeze(probs)  # (1, N) → (N,)
+        probs = np.squeeze(probs)
 
         k = min(k, len(probs))
         top_k_idx = probs.argsort()[::-1][:k]
         top_k_probs = probs[top_k_idx]
 
+        # Forzar a que ninguna acción sea > 1 - min_prob
+        top_k_probs = np.clip(top_k_probs, min_prob, 1.0 - min_prob)
+        top_k_probs /= top_k_probs.sum()
+
+        # Ajustar con temperatura
         logits = np.log(top_k_probs + 1e-8) / temperature
-        soft_probs = np.exp(logits)
+        soft_probs = np.exp(logits - np.max(logits))
         soft_probs /= soft_probs.sum()
+
+        print(f"Top-{k} acciones: {top_k_idx}, Softmax probabilidades: {soft_probs}")
 
         return np.random.choice(top_k_idx, p=soft_probs)
 
@@ -50,7 +61,7 @@ class MarioRLEvaluator:
         print("✅ Modelo CNN cargado correctamente")
         return model
 
-    def evaluate(self, model_path, episodes=1, exploration=True):
+    def evaluate(self, model_path, episodes=1, exploration=False):
         obs_shape = self.env.observation_space.shape  # (stack, H, W)
         stack, H, W = obs_shape
 

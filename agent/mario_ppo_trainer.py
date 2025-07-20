@@ -211,7 +211,7 @@ class PPOTrainer:
 
                     # Value loss
                     value_loss = nn.functional.mse_loss(values.squeeze(-1), returns_tensor)
-                    entropy_coef = max(0.05, 0.10 * (1 - (update / total_updates) ** 0.5))
+                    entropy_coef = max(0.01, 0.10 * (1 - (update / total_updates) ** 0.25))
 
                     # Total loss
                     loss = ( policy_loss + 0.5 * value_loss - entropy_coef * dist.entropy().mean() )

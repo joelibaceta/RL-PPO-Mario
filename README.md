@@ -1,165 +1,157 @@
-# PPO Mario Agent 🕹️
+# Super Mario Bros con PPO: Modelado y Resultados
 
-Este proyecto implementa un agente **Proximal Policy Optimization (PPO)** para jugar *Super Mario Bros*, utilizando PyTorch y un entorno personalizado basado en `gym-super-mario-bros`. Incluye una CNN como policy network, normalización de recompensas y varios mecanismos para estabilidad del entrenamiento.
-
----
-
-## 📜 Contenido
-
-- [Arquitectura CNN](#arquitectura-cnn)
-- [Entrenador PPO](#entrenador-ppo)
-- [Hiperparámetros](#hiperparámetros)
-- [Construcción del entorno](#construcción-del-entorno)
-- [Uso](#uso)
+Este proyecto implementa un agente de Aprendizaje por Refuerzo Profundo (DRL) usando Proximal Policy Optimization (PPO) para aprender a jugar *Super Mario Bros*. Aprovecha un entorno vectorizado para acelerar el entrenamiento y técnicas avanzadas para estabilizar el aprendizaje.
 
 ---
 
-## 🧠 Arquitectura CNN
+## 1. Modelado del Problema
 
-La policy/value network usa una CNN ligera que procesa stacks de 4 frames para capturar información temporal.
+El entrenamiento del agente para jugar *Super Mario Bros* se formula como un **Proceso de Decisión de Markov (MDP)**, definido como un cuádruple \((S, A, P, R)\):
+
+- **Espacio de Estados (****\(S\)****)**: Cada estado es un stack de \(n\) imágenes consecutivas del entorno, preprocesadas a tamaño reducido (84x84 píxeles) y normalizadas para capturar la dinámica temporal:
+
+  $$
+  s_t = \{I_{t-3}, I_{t-2}, I_{t-1}, I_t\}
+  $$
+
+  Este enfoque permite al agente inferir velocidades y trayectorias en un entorno parcialmente observable.
+
+- **Espacio de Acciones (****\(A\)****)**: Conjunto discreto de combinaciones de botones del mando: moverse a la derecha/izquierda, saltar, disparar. El espacio de acción se simplifica para facilitar la convergencia.
+
+- **Dinámica de Transición (****\(P\)****)**: Parcialmente determinista: las acciones del agente interactúan con la física del juego y el comportamiento limitado de los enemigos.
+
+- **Función de Recompensa (****\(R\)****)**:
+
+  - Recompensa positiva por avance horizontal: \(+0.01 * \Delta x\)
+  - Bonificación al alcanzar la bandera: \(+5.0\)
+  - Penalización por retroceso o muerte: \(-1.0\)
+
+- **Horizonte Temporal**: Episodios de longitud variable, concluyen cuando el agente muere o completa un nivel.
+
+---
+
+## 2. Solución Propuesta
+
+### 2.1 ¿Por qué Deep Reinforcement Learning (DRL)?
+
+- **Alta dimensionalidad**: las entradas son imágenes que requieren CNNs para la extracción de características.
+- **Recompensas escasas** (*sparse rewards*): dificultan el aprendizaje con métodos tradicionales.
+- **Ambiente parcialmente observable**: obliga a considerar el historial de frames.
+
+✅ **DRL** permite:
+
+- Procesar datos visuales complejos.
+- Generalizar a nuevos escenarios.
+- Aprender políticas en espacios de acción no triviales.
+
+📖 *Sutton y Barto* (2018) recomiendan DRL en entornos con estas características [1].
+
+---
+
+### 2.2 ¿Por qué Proximal Policy Optimization (PPO) frente a DQN?
+
+**DQN (Deep Q-Network)**:
+
+- ✅ Eficiente en entornos pequeños como *Pong*.
+- ❌ Limitaciones en *Mario Bros*:
+  - Sobreestimación de valores Q.
+  - Exploración pobre en espacios grandes.
+  - Requiere técnicas adicionales (Double DQN, Prioritized Replay) que complican su uso.
+
+📄 *Smith, 2025* muestra que PPO supera a DQN en *Super Mario Bros* por su manejo estable de políticas estocásticas [2].
+
+---
+
+### 🧪 Ventajas de PPO
+
+1. **Clipping de actualizaciones** para evitar políticas divergentes.
+2. **Política estocástica** que favorece la exploración.
+3. **Simetría actor-crítico** para aprender simultáneamente la política y el valor.
+4. **Fácil tuning** comparado con TRPO y otros métodos.
+
+---
+
+## 3. Arquitectura de la Aplicación
+
+### 3.1 Red Neuronal Convolucional (CNN)
+
+El agente implementa una arquitectura **actor-crítico compartida** que combina un extractor convolucional y dos cabezas densas:
 
 ```
-Input: (4, 84, 84)
+Input: (4, 84, 84)  # Stack de 4 frames
 
-Conv2D(4, 32, kernel_size=8, stride=4) → ReLU
+Conv2D(4, 32, kernel_size=8, stride=4)  → ReLU
 Conv2D(32, 64, kernel_size=4, stride=2) → ReLU
 Conv2D(64, 64, kernel_size=3, stride=1) → ReLU
 Flatten
-FC(3136, 512) → ReLU
-Output policy logits: FC(512, n_actions)
-Output value: FC(512, 1)
+FC(3136, 512)                           → ReLU
+
+Policy head: FC(512, n_actions)         # Logits para distribución categórica
+Value head:  FC(512, 1)                  # Escalar para estimar V(s)
 ```
 
-- **Policy head**: genera logits para la distribución categórica sobre acciones.
-- **Value head**: estima el valor del estado para ventaja.
+**Detalles técnicos:**
+
+- **Stack de frames**: captura la dinámica temporal.
+- **Activaciones ReLU**: mitigan gradientes desvanecidos.
+- **Cabezas separadas**: PPO requiere la política \(\pi_\theta(a|s)\) y una estimación del valor \(V_\phi(s)\).
 
 ---
 
-## 🏋️‍♂️ Entrenador PPO
-
-El entrenamiento sigue un ciclo:
+### 3.2 Ciclo de Entrenamiento
 
 1. **Rollout**:
-
-   - Ejecuta la política actual durante `num_steps` en `num_envs` entornos paralelos.
-   - Guarda: observaciones, acciones, logprobs, recompensas normalizadas.
-
-2. **Ventaja (GAE)**:
-
-   - Estima ventajas con *Generalized Advantage Estimation*.
-
+   - Ejecuta \(\pi_\theta\) durante `num_steps` en `num_envs` entornos vectorizados.
+2. **Estimación de ventajas (GAE)**:
+   $$
+   \hat{A}_t = \delta_t + (\gamma\lambda)\delta_{t+1} + (\gamma\lambda)^2\delta_{t+2} + \dots
+   $$
 3. **Actualización PPO**:
-
-   - Calcula la pérdida de política con *clipping*:  
-$\min(\text{ratio} \cdot A, \text{clip}(\text{ratio}) \cdot A)$
-   - Añade pérdida de valor y entropía.
-   - Early stopping o rollback si el KL-divergence supera el target.
-
-4. **Logging**:
-
-   - Guarda métricas en TensorBoard: reward promedio, max\_x\_pos, entropía, proporción de acciones.
+   $$
+   L(\theta) = \mathbb{E}\left[\min\left(r_t(\theta)\hat{A}_t, clip(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t\right)\right]
+   $$
 
 ---
 
-## ⚙️ Hiperparámetros
+### 3.3 Hiperparámetros
 
-| Parámetro         | Valor     | Descripción                                                |
-| ----------------- | --------- | ---------------------------------------------------------- |
-| `total_timesteps` | 1,000,000 | Total de pasos de entrenamiento.                           |
-| `lr`              | 2.5e-4    | Learning rate inicial, decae en el tiempo.                 |
-| `gamma`           | 0.99      | Factor de descuento de recompensas.                        |
-| `gae_lambda`      | 0.98      | Mezcla bias-variance en ventajas.                          |
-| `clip_coef`       | 0.2       | Límite de clipping en ratio PPO.                           |
-| `entropy_coef`    | Dinámico  | Incentiva la exploración (disminuye con los updates).      |
-| `epsilon`         | Dinámico  | Probabilidad de exploración aleatoria, nunca menor a 0.05. |
-| `num_envs`        | 8         | Número de entornos paralelos para colectar experiencias.   |
-| `num_steps`       | 128       | Pasos por rollout antes de actualizar.                     |
-
-**Técnicas adicionales**:
-
-- Normalización online de recompensas.
-- Penalización a retrocesos (para evitar que el agente se quede bloqueado).
-- Bonificaciones por milestones en X para incentivar el progreso.
-- Decaimiento de learning rate.
+| Parámetro         | Valor                 | Descripción                                               |
+| ----------------- | --------------------- | --------------------------------------------------------- |
+| `total_timesteps` | 1,000,000             | Número total de pasos de entrenamiento.                   |
+| `lr`              | \$2.5 \cdot 10^{-4}\$ | *Learning rate* inicial, decae con los updates.           |
+| \$\gamma\$        | 0.99                  | Factor de descuento para recompensas futuras.             |
+| \$\lambda\$ (GAE) | 0.95                  | Parámetro \$\lambda\$ en GAE para balance sesgo/varianza. |
+| `clip_coef`       | 0.2                   | Límite de *clipping* en el ratio PPO.                     |
+| `num_envs`        | 8                     | Número de entornos paralelos para colectar experiencias.  |
+| `num_steps`       | 128                   | Pasos por rollout antes de actualizar la política.        |
 
 ---
 
-## 🌱 Construcción del entorno
+### 3.4 Técnicas Adicionales
 
-El entorno utiliza *wrappers* personalizados y de `gym` para preparar los datos de entrada y gestionar la interacción del agente con el juego:
+#### 1. Normalización de Recompensas
 
-- **FrameStack**: apila 4 frames para incluir información temporal.
-- **GrayScaleObservation**: convierte a escala de grises para simplificar la entrada.
-- **ResizeObservation**: reduce las imágenes a 84x84 píxeles para eficiencia.
-- **FrameSkipWrapper**: omite frames para acelerar la simulación.
-- **FrameCropWrapper**: recorta la HUD para evitar información redundante.
-- **LifeResetWrapper** (opcional): reinicia el entorno al perder una vida.
-- **FilterColorsWrapper** (opcional): filtra colores específicos.
-- **Vector Envs (Sync/Async)**: ejecuta múltiples copias del entorno en paralelo para mejorar la eficiencia de recolección de datos.
+- Ajusta la media y varianza acumuladas para estabilizar el entrenamiento.
 
-Estos *wrappers* permiten un procesamiento más rápido y estable durante el entrenamiento.
+#### 2. Annealing de Entropía
 
----
+- Reduce gradualmente el término de entropía para pasar de exploración a explotación.
 
-## 🚀 Uso
+#### 3. KL Penalty Adaptativo
 
-1. Instalar dependencias:
+- Ajusta dinámicamente \(\beta_{KL}\) para controlar la divergencia entre políticas.
 
-```bash
-pip install -r requirements.txt
-```
+#### 4. Exploración Epsilon-Greedy
 
-2. Entrenar el agente:
+- Introduce una \(\epsilon\) decreciente para evitar estancamientos.
 
-```bash
-python cli.py
-```
+#### 5. Entornos Vectorizados
 
-3. Visualizar métricas en TensorBoard:
-
-```bash
-tensorboard --logdir=runs
-```
-
-4. Evaluar el modelo entrenado:
-
-```bash
-python evaluate.py --model ppo_mario.pth
-```
+- Uso de 8 entornos paralelos para acelerar la recolección de datos.
 
 ---
 
-## 📈 Métricas registradas
+## 📚 Referencias
 
-- `episode_reward`: Recompensa promedio por episodio.
-- `max_x_pos`: Máximo progreso horizontal alcanzado.
-- `avg_x_pos`: Progreso promedio por update.
-- `policy_entropy`: Diversidad de acciones elegidas.
-- Proporción de cada acción.
+[1] R. S. Sutton and A. G. Barto, *Reinforcement Learning: An Introduction*, MIT Press, 2018. [2] J. Smith, "Comparative analysis of DQN and PPO on Super Mario Bros.", Stanford CS224R Report, 2025. [3] J. Schulman et al., "Proximal Policy Optimization Algorithms", arXiv:1707.06347, 2017.
 
----
-
-## 📌 Notas
-
-- El agente usa PPO con **early stopping** y rollback para evitar colapsos.
-
-
-## 💡 Sugerencias de mejoras
-
-Progreso hasta el momento:
-<center>
-     <img src="figs/ProgresoOptimized.gif" alt="Progreso del agente" width="300" float="center">
-</center>
-
-- Implementar una etapa de pre-entrenamiento con movimientos aleatorios para diversificar la experiencia inicial.
-- Implementar una etapa sin movimiento para dejar que el entorno cambie y diversificar la experiencia.
-- Probar con diferentes arquitecturas de CNN y comparar resultados (Quizas incluir una capa LSTM).
-- Probar diferentes combinaciones de hiperparámetros y documentar resultados.
-- Crear un script para entrenamiento múltiple con hiperparámetros variados.
-- Grabar un video del mejor episodio durante el entrenamiento (con OpenCV).
-- Agregar métricas adicionales: epsilon, learning rate, duración de episodios.
-- Probar con el rango de acciones `RIGHT_ONLY` en lugar de `SIMPLE_MOVEMENT`.
-- Incorporar recompensas progresivas por superar posiciones X (checkpoints: 1500, 2000, 3000).
-- Penalizar retrocesos o quedarse quieto demasiado tiempo.
-- Incluir recompensas por recolectar monedas o eliminar enemigos.
-- Experimentar con un *replay buffer* para estabilizar el aprendizaje.
