@@ -24,10 +24,12 @@ class PPOTrainer:
         update_epochs=4,
         batch_size=512,
         num_envs=8,
+        run_name=None
     ):
-
         timestamp = time.strftime("%Y%m%d-%H%M%S")
-        self.writer = SummaryWriter(log_dir=f"runs/ppo_mario/{timestamp}")
+        self.run_name = f"{run_name}_{timestamp}" or f"ppo_lr{lr}_clip{clip_coef}_bs{batch_size}_{timestamp}"
+        self.writer = SummaryWriter(log_dir=f"runs/{self.run_name}")
+        self.model_path = f"models/{self.run_name}.pth"
 
         # Hiperparámetros
         self.total_timesteps = total_timesteps
@@ -43,6 +45,7 @@ class PPOTrainer:
 
         self.initial_kl = 0.3
         self.final_kl = 0.05
+        self.kl_beta = 1.0
 
         self.action_counter = Counter()
 
@@ -96,14 +99,17 @@ class PPOTrainer:
                 
                 obs_buf, actions_buf, logprobs_buf, rewards_buf, dones_buf, values_buf = ([], [], [], [], [], [])
                 prev_x_pos, max_x_pos = np.zeros(self.num_envs, dtype=np.float32), np.zeros(self.num_envs, dtype=np.float32)
-
+                prev_max_x_pos = np.zeros(self.num_envs, dtype=np.float32)
+                annealed_temperature = max(0.8, 1.0 * (1 - (update / (2 * total_updates))))
                 # lr = self.lr * (1 - (update / total_updates)) ** 0.5
                 # for param_group in self.optimizer.param_groups:
                 #     param_group['lr'] = lr
 
                 # Rollout
                 for step in range(num_steps):
+                    
                     logits, value = self.model(obs.to(device))
+                    logits = logits / annealed_temperature  # Suavizado con temperatura
                     dist = Categorical(logits=logits.cpu())
                     action = dist.sample().to(device)
                     epsilon = max(0.05, 0.5 * (1 - update / total_updates))
@@ -136,18 +142,31 @@ class PPOTrainer:
 
                     normalized_reward = self.reward_normalizer.normalize(np.array(reward))
 
+                    for env_idx in range(self.num_envs):
+                        if done[env_idx]:
+                            # Penaliza si la posición final del episodio actual < posición final anterior
+                            if curr_x_pos[env_idx] < prev_x_pos[env_idx]:
+                                penalty = -0.2 * (prev_x_pos[env_idx] - curr_x_pos[env_idx])
+                                normalized_reward[env_idx] += penalty
+                                print(f"⚠️ Penalización en env {env_idx}: {penalty:.3f}")
+
+                            # Actualiza la posición anterior para el próximo episodio
+                            prev_x_pos[env_idx] = curr_x_pos[env_idx]
+
                     curr_x_pos = np.array(info["x_pos"])
                     # Checkpoints rewards
                     for env in range(self.num_envs):
                         if curr_x_pos[env] > max_x_pos[env]:
                             normalized_reward[env] += 0.01 * (curr_x_pos[env] - max_x_pos[env])
                             max_x_pos[env] = curr_x_pos[env]
-                        #if curr_x_pos[env] > 2000:
-                        #    normalized_reward[env] += 0.1  # Bonus por llegar a 2000
+                        if curr_x_pos[env] > 2000:
+                            normalized_reward[env] += 0.5  # Bonus por llegar a 2000
 
                     delta_x = curr_x_pos - prev_x_pos
                     progress_reward = delta_x * 0.01
                     normalized_reward += np.where(delta_x > 0, progress_reward, 0)
+
+                    
 
                     rewards_buf.append(normalized_reward)
                     dones_buf.append(done)
@@ -194,8 +213,15 @@ class PPOTrainer:
                 for epoch in range(self.update_epochs):
                     logits, values = self.model(obs_tensor)
                     if torch.isnan(logits).any():
-                        print("🚨 NaN detected in logits")
-                        continue
+                        print("⚠️ NaN en logits: reiniciando modelo")
+                        self.model.load_state_dict(old_model_state)
+                        self.optimizer.load_state_dict(old_optimizer_state)
+                        break 
+                    
+                    
+                    logits = logits / max(annealed_temperature, 1e-3)  # Suavizado con temperatura
+                    logits = torch.nan_to_num(logits, nan=0.0, posinf=10.0, neginf=-10.0)
+                    logits = torch.clamp(logits, -10, 10)
                     dist = Categorical(logits=logits)
                     new_logprobs = dist.log_prob(actions_tensor)
                     ratio = (new_logprobs - logprobs_tensor).exp()
@@ -211,7 +237,10 @@ class PPOTrainer:
 
                     # Value loss
                     value_loss = nn.functional.mse_loss(values.squeeze(-1), returns_tensor)
-                    entropy_coef = max(0.01, 0.10 * (1 - (update / total_updates) ** 0.25))
+                    if update < total_updates * 0.3:
+                        entropy_coef = 0.1
+                    else:
+                        entropy_coef = max(0.01, 0.2 * (1 - (update / total_updates)))
 
                     # Total loss
                     loss = ( policy_loss + 0.5 * value_loss - entropy_coef * dist.entropy().mean() )
@@ -221,26 +250,18 @@ class PPOTrainer:
                     # 🎯 Approx KL before optimizer step
                     approx_kl = (logprobs_tensor - new_logprobs).mean().item()
 
-                    if (
-                        approx_kl > target_kl * 2
-                    ):  # 🚨 rollback threshold (stricter than early stop)
-                        print(f"⏪ Rollback: KL={approx_kl:.4f} > 2*target={target_kl:.4f}")
-                        # 🔄 Restaurar modelo y optimizador
-                        self.model.load_state_dict(old_model_state)
-                        self.optimizer.load_state_dict(old_optimizer_state)
-                        self.optimizer.zero_grad()
-                        break  # Salir del bucle de epochs (rollback)
+                    loss += self.kl_beta * approx_kl
 
-                    elif approx_kl > target_kl:
-                        print(
-                            f"🚨 Early stopping at epoch {epoch} due to KL={approx_kl:.4f} (target={target_kl:.4f})"
-                        )
-                        break  # 🛑 skip optimizer step`
+                    if approx_kl > target_kl:
+                        self.kl_beta *= 1.5
+                    else:
+                        self.kl_beta /= 1.5
+                    self.kl_beta = np.clip(self.kl_beta, 1e-4, 10.0)
 
                     # Backprop
                     self.optimizer.zero_grad()
                     loss.backward()
-                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
+                    nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.1)
                     self.optimizer.step()
 
                 total_actions = sum(self.action_counter.values())
@@ -260,6 +281,7 @@ class PPOTrainer:
                     dist_entropy=dist.entropy().mean().item(),
                     action_counter=self.action_counter,
                     action_space_n=self.env.single_action_space.n,
+                    annealed_temperature=annealed_temperature,
                     loss=loss.item()
                 )
                 self.action_counter.clear()
@@ -267,6 +289,6 @@ class PPOTrainer:
                 pbar.set_postfix(loss=loss.item(), entropy=dist.entropy().mean().item())
 
         # Guardar modelo
-        torch.save(self.model.state_dict(), "ppo_mario.pth")
-        print("🎉 Modelo guardado en ppo_mario.pth")
+        torch.save(self.model.state_dict(), self.model_path)
+        print(f"🎉 Modelo guardado en {self.model_path}")
 

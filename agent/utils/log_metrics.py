@@ -2,7 +2,7 @@ import numpy as np
 from collections import Counter
 import torch
 
-def log_metrics(writer, update, rewards_buf, max_x_pos, info, dist_entropy, action_counter, action_space_n, loss):
+def log_metrics(writer, update, rewards_buf, max_x_pos, info, dist_entropy, action_counter, action_space_n, loss, annealed_temperature):
     """
     Loguea métricas y pérdidas en TensorBoard.
 
@@ -36,3 +36,4 @@ def log_metrics(writer, update, rewards_buf, max_x_pos, info, dist_entropy, acti
     writer.add_scalar("charts/avg_x_pos", avg_x_pos_update, update)
     writer.add_scalar("charts/episode_reward", avg_reward, update)
     writer.add_scalar("loss/total", loss, update)
+    writer.add_scalar("loss/annealed_temperature", annealed_temperature, update)
